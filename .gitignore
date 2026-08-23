@@ -1,0 +1,60 @@
+# Env & secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# Next.js auto-generated agent rule files (disabled via next.config)
+frontend/AGENTS.md
+frontend/CLAUDE.md
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+.turbo/
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Data volumes (local). The bare `data/` pattern matches at ANY depth, which
+# silently swallowed backend/app/data/job_boards.json — shipped source data, not
+# a volume. Anchored to the repo root, with an explicit exception for the app's
+# own data directory.
+/data/
+minio-data/
+postgres-data/
+
+# graphify build output
+graphify-out/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Celery beat's local schedule database
+celerybeat-schedule*
+celerybeat.pid
+
+# TypeScript incremental build cache
+*.tsbuildinfo
+
+# Playwright
+playwright-report/
+test-results/

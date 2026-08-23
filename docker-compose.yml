@@ -1,0 +1,143 @@
+# Local / single-VPS stack. For production TLS, layer docker-compose.prod.yml (adds Caddy).
+services:
+  mongo:
+    image: mongo:7
+    volumes:
+      - mongo-data:/data/db
+    ports:
+      # Host-side port is configurable: a native mongod on 27017 would otherwise
+      # make `compose up` fail. Containers reach each other on the compose
+      # network as mongo:27017 regardless of what this is mapped to.
+      - "127.0.0.1:${MONGO_HOST_PORT:-27017}:27017"
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    ports:
+      - "127.0.0.1:${REDIS_HOST_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - minio-data:/data
+    ports:
+      - "127.0.0.1:${MINIO_HOST_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_HOST_PORT:-9001}:9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    env_file: .env
+    volumes:
+      - ./backend:/app
+    ports:
+      - "${API_HOST_PORT:-8000}:8000"
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.worker
+    command: celery -A app.workers.celery_app.celery worker --loglevel=info --concurrency=2
+    env_file: .env
+    volumes:
+      - ./backend:/app
+    depends_on:
+      api:
+        condition: service_started
+      redis:
+        condition: service_healthy
+
+  # The scheduler. Without it, discovery/matching/apply never run and the shared
+  # job pool stays empty — the product does nothing on its own.
+  beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    # Writes its schedule to a known path so the healthcheck can watch it tick.
+    command: >-
+      celery -A app.workers.celery_app.celery beat --loglevel=info
+      --schedule=/tmp/celerybeat-schedule
+    # beat serves no HTTP, so it must NOT inherit the API image's curl
+    # healthcheck — that reported the container unhealthy forever. Liveness here
+    # means "the scheduler is still ticking", i.e. it is still syncing its
+    # schedule file. Generous window: PersistentScheduler syncs every few
+    # minutes, not every second.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          python -c "import os,sys,time;
+          p='/tmp/celerybeat-schedule';
+          sys.exit(0 if os.path.exists(p) and time.time()-os.path.getmtime(p) < 900 else 1)"
+      interval: 60s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
+    env_file: .env
+    volumes:
+      - ./backend:/app
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # Optional local LLM server, behind a profile so it does NOT start by default.
+  # It is a multi-GB image, it collides with a native `ollama` on 11434, and it
+  # is unnecessary unless LLM_DEFAULT_MODEL/LLM_FALLBACK_MODELS name an
+  # `ollama/...` model. Start it explicitly with:
+  #     docker compose --profile ollama up
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["ollama"]
+    volumes:
+      - ollama-data:/root/.ollama
+    ports:
+      - "127.0.0.1:${OLLAMA_HOST_PORT:-11434}:11434"
+
+  web:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # Baked into the client bundle at build time — see frontend/Dockerfile.
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}
+    env_file: .env
+    ports:
+      - "${WEB_HOST_PORT:-3000}:3000"
+    depends_on:
+      - api
+
+volumes:
+  mongo-data:
+  redis-data:
+  minio-data:
+  ollama-data:

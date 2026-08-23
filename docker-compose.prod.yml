@@ -1,0 +1,98 @@
+# Production overlay: `docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d`
+# Adds Caddy (TLS), drops source-mount volumes, disables --reload.
+#
+# NOTE the `!reset []` on every `ports:` below. Compose APPENDS sequences when
+# merging overlays, so a plain `ports: []` here did nothing and the base file's
+# publishes survived — the API on 0.0.0.0:8000 and Next on 0.0.0.0:3000, both
+# reachable without TLS and bypassing Caddy's security headers entirely.
+# `!reset` is what actually clears an inherited list (Compose v2.24+).
+services:
+  api:
+    # Each worker is a full Python process with the whole app loaded (~200MB).
+    # Four of them need ~800MB before MongoDB, the Celery worker and Chromium
+    # ask for theirs, which does not fit a 2GB server. Rule of thumb:
+    # API_WORKERS = 2 on 2GB, 4 on 4GB, (2 x vCPU) + 1 above that.
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${API_WORKERS:-2} --proxy-headers --forwarded-allow-ips=*
+    volumes: !reset []
+    restart: unless-stopped
+    ports: !reset []
+    # The base file waits for the local `minio` container to be healthy. In
+    # production the bucket lives in managed storage (see the minio service
+    # below), so that container never starts and the wait would block forever.
+    # `!override` REPLACES the mapping — a plain `depends_on:` here would merge
+    # with the base and keep the minio entry.
+    depends_on: !override
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    volumes: !reset []
+    restart: unless-stopped
+
+  beat:
+    volumes: !reset []
+    restart: unless-stopped
+
+  web:
+    build:
+      args:
+        # "/" = same origin. Caddy serves the app and /api on one hostname, so
+        # nothing about the API's address belongs in the client bundle. NOT ""
+        # — Docker ignores an empty build arg and falls back to the Dockerfile
+        # default.
+        NEXT_PUBLIC_API_BASE_URL: "/"
+    restart: unless-stopped
+    ports: !reset []
+
+  mongo:
+    ports: !reset []
+    restart: unless-stopped
+
+  redis:
+    ports: !reset []
+    restart: unless-stopped
+
+  # Production is expected to use managed S3-compatible storage — Cloudflare R2,
+  # AWS S3, Backblaze B2 — configured through MINIO_ENDPOINT / MINIO_ROOT_USER /
+  # MINIO_ROOT_PASSWORD / MINIO_BUCKET despite the MINIO_ prefix. The container
+  # here is only a development stand-in, so a profile keeps it from starting,
+  # eating memory, and holding a volume nothing ever reads.
+  #
+  # To self-host MinIO in production instead, set MINIO_ENDPOINT=minio:9000 and
+  # bring the stack up with the profile enabled:
+  #     docker compose -f docker-compose.yml -f docker-compose.prod.yml \
+  #       --profile local-storage up -d
+  # then restore api's dependency on it, or the API may start before the bucket
+  # is reachable.
+  minio:
+    profiles: ["local-storage"]
+    ports: !reset []
+    restart: unless-stopped
+
+  ollama:
+    ports: !reset []
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    environment:
+      # Read by {$APP_DOMAIN} in the Caddyfile. Certificates are issued for
+      # this name, so a typo here means a TLS failure, not a 404.
+      APP_DOMAIN: ${APP_DOMAIN:?set APP_DOMAIN in .env, e.g. example.com}
+    depends_on:
+      - api
+      - web
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    restart: unless-stopped
+
+volumes:
+  caddy-data:
+  caddy-config:

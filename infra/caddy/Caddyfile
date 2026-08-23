@@ -1,0 +1,59 @@
+# Production reverse proxy with automatic HTTPS.
+#
+# The domain comes from APP_DOMAIN in .env — do NOT hardcode it here. Editing a
+# tracked file on the server leaves the working tree dirty and the next
+# `git pull` refuses to run.
+#
+# Caddy provisions and renews Let's Encrypt certificates by itself; it only
+# needs ports 80 and 443 reachable from the internet and the DNS A record
+# already pointing here.
+
+{
+	# Silence the "no admin endpoint" warning in containers and keep the admin
+	# API off the network.
+	admin off
+}
+
+{$APP_DOMAIN}, www.{$APP_DOMAIN} {
+	encode gzip zstd
+
+	# Baseline security headers for every response.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "geolocation=(), microphone=(), camera=(), payment=(self)"
+		Cross-Origin-Opener-Policy "same-origin"
+		# The app is self-hosted and self-contained: no third-party scripts.
+		# `connect-src` includes self because the browser calls /api on this host.
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+		# Don't advertise the stack.
+		-Server
+		-X-Powered-By
+	}
+
+	# Stripe webhooks must reach the API unmodified (signature covers the body).
+	handle /api/v1/billing/webhook {
+		reverse_proxy api:8000
+	}
+
+	# API and auth under /api
+	handle /api/* {
+		reverse_proxy api:8000
+	}
+
+	handle /health* {
+		reverse_proxy api:8000
+	}
+
+	# Everything else -> Next.js
+	handle {
+		reverse_proxy web:3000
+	}
+}
+
+# MinIO console — keep this commented unless you need it, and put it behind auth.
+# minio.aptil.ai {
+# 	reverse_proxy minio:9001
+# }

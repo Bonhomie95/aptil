@@ -1,0 +1,34 @@
+# Optional self-hosted search backend for web-wide job discovery.
+#
+# SearXNG is a keyless, unlimited metasearch engine — the zero-cost, no-quota
+# option for WEB_SEARCH_PROVIDER=searxng. Run it alongside the stack:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml \
+#     -f docker-compose.searxng.yml up -d
+#
+# Then in .env:
+#   WEB_SEARCH_PROVIDER=searxng
+#   WEB_SEARCH_ENDPOINT=http://searxng:8080/search
+#   WEB_SEARCH_API_KEY=            # not needed
+#
+# It stays on the internal network (no published port); only the api/worker
+# containers reach it by service name.
+services:
+  searxng:
+    image: searxng/searxng:latest
+    environment:
+      # JSON output is off by default; the connector needs it.
+      SEARXNG_SETTINGS_PATH: /etc/searxng/settings.yml
+    volumes:
+      - ./infra/searxng:/etc/searxng:ro
+    restart: unless-stopped
+
+  api:
+    depends_on:
+      searxng:
+        condition: service_started
+
+  worker:
+    depends_on:
+      searxng:
+        condition: service_started

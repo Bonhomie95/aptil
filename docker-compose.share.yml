@@ -1,0 +1,42 @@
+# Overlay for handing a tester a public link, with no hosting bill.
+#
+#   ./infra/scripts/share.sh
+#
+# It opens a Cloudflare Quick Tunnel to the web container and prints an
+# https://<random>.trycloudflare.com URL. Free, no account, no card.
+#
+# The whole app has to come out of ONE origin for that to work, so this overlay
+# switches the browser onto the same-origin proxy (next.config.mjs mode 1):
+# the client bundle is built with an empty API base, and Next forwards /api to
+# the API container server-side. That also means no CORS to configure and
+# nothing environment-specific baked into the bundle.
+#
+# NOT a deployment. It lives as long as your laptop is awake, and the URL
+# changes every run. See docs/share-a-link.md.
+
+services:
+  web:
+    build:
+      args:
+        # "/" means same-origin once lib/api.ts strips the trailing slash.
+        # NOT "": Docker falls back to the Dockerfile's ARG default when a
+        # build arg is empty, which would bake in http://localhost:8000 — the
+        # one value guaranteed to break through a tunnel.
+        NEXT_PUBLIC_API_BASE_URL: "/"
+    environment:
+      # Read when the server starts, so this needs a restart, not a rebuild.
+      API_PROXY_TARGET: http://api:8000
+
+  api:
+    environment:
+      # Every request now arrives from the web container, so the API must be
+      # told to believe the X-Forwarded-For it sets — otherwise all of your
+      # testers share one rate-limit bucket and lock each other out.
+      TRUSTED_PROXY_IPS: ${SHARE_PROXY_CIDR:-172.16.0.0/12}
+      # Verification and reset links must point at the tunnel, not localhost.
+      FRONTEND_BASE_URL: ${SHARE_URL:?run via infra/scripts/share.sh}
+      BACKEND_CORS_ORIGINS: ${SHARE_URL}
+
+  worker:
+    environment:
+      FRONTEND_BASE_URL: ${SHARE_URL:?run via infra/scripts/share.sh}

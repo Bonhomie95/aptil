@@ -1,0 +1,196 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ------------------------------------------------------------------ */
+/* Design tokens.                                                      */
+/*                                                                     */
+/* Near-monochrome warm greys with a single deep blue. The rule that   */
+/* holds the whole system together: --primary is near-black (actions)  */
+/* and --accent is blue (information — scores, active state, brand,    */
+/* focus). A screen where the only blue is a match score reads         */
+/* composed; blue buttons + blue links + blue badges read like a       */
+/* template.                                                           */
+/*                                                                     */
+/* Every foreground/background pair below is >= 4.5:1 in both themes.  */
+/* ------------------------------------------------------------------ */
+:root {
+  --color-background: #fcf8fb; /* page canvas */
+  --color-card: #fcf8fb;       /* card on canvas — separated by a hairline */
+  --color-surface: #ffffff;    /* raised: auth card, section headers */
+  --color-muted: #f6f2f5;      /* subtle fill: stat tiles, stalled rows */
+  --color-tile: #f0edf0;       /* logo / icon tiles, track of a switch */
+
+  --color-foreground: #1c1b1d;       /* 16.3:1 on canvas */
+  --color-muted-foreground: #434655; /*  8.9:1 */
+  --color-subtle: #5e5e67;           /*  6.1:1 */
+  --color-border: #c3c6d7;
+
+  --color-primary: #1c1b1d;    /* action */
+  --color-on-primary: #fcf8fb;
+  --color-accent: #004ac6;     /* information */
+  --color-on-accent: #ffffff;
+  --color-accent-soft: #e0dee9;
+
+  --color-danger: #ba1a1a;
+  --color-positive: #006d3c;
+  --color-warn: #bc4800;
+  --color-warn-bg: #ffdbcd;
+  --color-warn-foreground: #360f00;
+
+  --shadow-raised: 0 1px 2px rgba(28, 27, 29, 0.06);
+  /* Resting elevation for tilt cards — visible without a hover, so a card
+     reads as an object sitting above the page, not a bordered rectangle.
+     The inset line is a faint top highlight, like light catching an edge. */
+  --shadow-card: inset 0 1px 0 rgba(255, 255, 255, 0.8), 0 2px 4px rgba(28, 27, 29, 0.06),
+    0 14px 32px -10px rgba(28, 27, 29, 0.26);
+  --shadow-float: 0 24px 48px -12px rgba(28, 27, 29, 0.34);
+
+  /* One curve, one duration. Everything moves the same way. */
+  --ease: cubic-bezier(0.32, 0.72, 0, 1);
+
+  /* Native controls — select, scrollbars, date pickers — follow the
+     theme instead of rendering a light dropdown on a dark page. */
+  color-scheme: light;
+}
+
+.dark {
+  --color-background: #131215;
+  --color-card: #1a181c;
+  --color-surface: #201d22;
+  --color-muted: #201d22;
+  --color-tile: #26232a;
+
+  --color-foreground: #f4f0f3;       /* 16.5:1 */
+  --color-muted-foreground: #b9bcd0; /*  9.9:1 */
+  --color-subtle: #94919c;           /*  6.0:1 */
+  --color-border: #35323b;
+
+  /* The near-black button inverts rather than disappearing. */
+  --color-primary: #f4f0f3;
+  --color-on-primary: #131215;
+  --color-accent: #94b8ff;
+  --color-on-accent: #00325c;
+  --color-accent-soft: #23293c;
+
+  --color-danger: #ffb4ab;
+  --color-positive: #6ddc9a;
+  --color-warn: #ffb599;
+  --color-warn-bg: #3a1300;
+  --color-warn-foreground: #ffdbcd;
+
+  --shadow-raised: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-card: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 2px 4px rgba(0, 0, 0, 0.45),
+    0 14px 36px -10px rgba(0, 0, 0, 0.6);
+  --shadow-float: 0 24px 52px -12px rgba(0, 0, 0, 0.8);
+
+  color-scheme: dark;
+}
+
+* {
+  border-color: var(--color-border);
+}
+
+body {
+  background-color: var(--color-background);
+  color: var(--color-foreground);
+  font-family: var(--font-body), ui-sans-serif, system-ui, sans-serif;
+  /* tnum is not cosmetic: every number here sits in a column (match %,
+     quotas, scores) and proportional figures make them jitter on update. */
+  font-feature-settings: "cv11", "ss01", "tnum";
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ------------------------------------------------------------------ */
+/* Signature component 1 — the working line.                           */
+/* A 1px accent hairline crossing the top of the page whenever         */
+/* background work is running. Replaces spinners on whole-page work.   */
+/* ------------------------------------------------------------------ */
+@keyframes working-line {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+.shimmer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--color-border) 55%, transparent),
+    transparent
+  );
+  animation: shimmer 1.6s infinite;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+/* The marketing navbar is fixed, so anchor targets must not land under it. */
+:target,
+section[id] {
+  scroll-margin-top: 6rem;
+}
+
+/* One visible focus ring everywhere, in the information colour. */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* Skip link: first tab stop on every page. */
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 100;
+}
+.skip-link:focus {
+  left: 1rem;
+  top: 1rem;
+  padding: 0.6rem 1rem;
+  border-radius: 8px;
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+}
+
+/* Long, unbroken strings (a generated password, a 90-char job title) must
+   wrap rather than push the layout sideways. */
+.break-anywhere {
+  overflow-wrap: anywhere;
+}
+
+/* A soft, low-opacity radial wash behind the hero — depth without a literal
+   gradient panel. color-mix keeps it correct in both themes off one token. */
+.hero-glow {
+  background: radial-gradient(
+    720px circle at 50% 0%,
+    color-mix(in srgb, var(--color-accent) 10%, transparent),
+    transparent 70%
+  );
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

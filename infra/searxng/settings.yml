@@ -1,0 +1,11 @@
+# Minimal SearXNG config for Aptil's job discovery. JSON format is REQUIRED —
+# the default install serves HTML only, which the connector cannot parse.
+use_default_settings: true
+server:
+  # Any non-empty value; SearXNG refuses to start without a secret.
+  secret_key: "change-me-searxng-secret"
+  limiter: false
+search:
+  formats:
+    - html
+    - json

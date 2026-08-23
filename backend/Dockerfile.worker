@@ -1,0 +1,37 @@
+# Worker image = API image + Playwright/Chromium for the consent-based ATS adapters.
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential curl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install uv
+
+COPY pyproject.toml README.md* ./
+COPY app ./app
+RUN uv pip install --system -e ".[automation]"
+
+# Install the Chromium browser + its OS libraries into a shared location so the
+# unprivileged runtime user can read them.
+RUN playwright install --with-deps chromium \
+    && chmod -R a+rx /opt/playwright
+
+COPY . .
+
+# The worker drives a browser over untrusted third-party pages — the one place
+# in this stack where running as root would be least excusable.
+RUN useradd --create-home --uid 10001 aptil && chown -R aptil:aptil /app
+USER aptil
+
+HEALTHCHECK --interval=60s --timeout=10s --start-period=30s --retries=3 \
+  CMD celery -A app.workers.celery_app.celery inspect ping -d celery@$HOSTNAME || exit 1
+
+# Overridden by docker-compose (celery worker command).
+CMD ["celery", "-A", "app.workers.celery_app.celery", "worker", "--loglevel=info"]

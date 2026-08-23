@@ -1,0 +1,275 @@
+# Render Blueprint — temporary/staging deployment of Aptil.
+#
+# What Render provides here: the API, the web app, the Celery worker, the Celery
+# beat scheduler, and Redis.
+#
+# What Render does NOT provide, so you bring it (both have free tiers):
+#   • MongoDB   — Render has no managed MongoDB. Use MongoDB Atlas (M0 is free).
+#   • Object storage — Render has no S3. Use Cloudflare R2 (free tier) or any
+#     S3-compatible service; app/services/storage.py talks to an `endpoint_url`,
+#     so R2/B2/S3/MinIO all work with the same MINIO_* variables.
+#
+# Deploy:
+#   1. Push this file to the repo root.
+#   2. Render Dashboard → New → Blueprint → pick the repo.
+#   3. Fill in every variable marked `sync: false` (Render will prompt).
+#   4. After the first deploy, seed the plan catalogue — new accounts are put on
+#      the free plan and entitlement checks read its limits, so nothing works
+#      until you do:
+#        Render → aptil-api → Shell →  python -m scripts.seed
+#
+# Costs: worker + beat are Background Workers, which Render does not offer on the
+# free plan. The worker runs headless Chromium, so it needs ~1GB RAM (Starter).
+# Delete the Blueprint when you're done testing to stop billing.
+
+services:
+  # ---------------------------------------------------------------- Redis ----
+  # Celery broker/result backend AND the rate-limiter store.
+  # `type: redis` is the classic name; newer Render accounts call this
+  # "Key Value" (`type: keyvalue`). Rename if your account rejects this.
+  - type: redis
+    name: aptil-redis
+    plan: free
+    region: oregon
+    maxmemoryPolicy: noeviction # Celery must never have its queues evicted
+    ipAllowList: [] # internal-only: no public access
+
+  # ------------------------------------------------------------------ API ----
+  - type: web
+    name: aptil-api
+    runtime: docker
+    plan: starter
+    region: oregon
+    rootDir: backend
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    # Render injects $PORT and terminates TLS in front of us, so bind $PORT and
+    # trust its forwarded headers.
+    dockerCommand: >-
+      uvicorn app.main:app --host 0.0.0.0 --port $PORT
+      --proxy-headers --forwarded-allow-ips=*
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: PROJECT_NAME
+        value: Aptil
+
+      # --- secrets: Render generates these for you ---
+      - key: SECRET_KEY
+        generateValue: true # 256-bit random; satisfies the >=32-char check
+      # Fernet key for site credentials. MUST be a urlsafe-base64 32-byte key —
+      # generate locally and paste, `generateValue` will not produce a valid one:
+      #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+      - key: CREDENTIAL_ENCRYPTION_KEY
+        sync: false
+
+      # --- MongoDB Atlas connection string (mongodb+srv://...) ---
+      - key: MONGO_URL
+        sync: false
+      - key: MONGO_DB
+        value: aptil
+
+      - key: REDIS_URL
+        fromService:
+          name: aptil-redis
+          type: redis
+          property: connectionString
+
+      # --- object storage (Cloudflare R2 / S3 / B2) ---
+      # R2 endpoint looks like: <account-id>.r2.cloudflarestorage.com
+      - key: MINIO_ENDPOINT
+        sync: false
+      - key: MINIO_ROOT_USER # = R2 Access Key ID
+        sync: false
+      - key: MINIO_ROOT_PASSWORD # = R2 Secret Access Key
+        sync: false
+      - key: MINIO_BUCKET
+        value: aptil-uploads
+      - key: MINIO_SECURE
+        value: "true" # R2/S3 are HTTPS; MinIO-over-http is not
+      # The region is part of the SigV4 signature, so a wrong value fails with
+      # SignatureDoesNotMatch rather than anything helpful.
+      #   Cloudflare R2 -> auto
+      #   AWS S3        -> the bucket's real region, e.g. eu-west-1
+      - key: MINIO_REGION
+        value: auto
+
+      # --- URLs. Filled from the web service so they always match. ---
+      - key: FRONTEND_BASE_URL
+        fromService:
+          name: aptil-web
+          type: web
+          property: host
+      - key: BACKEND_CORS_ORIGINS
+        fromService:
+          name: aptil-web
+          type: web
+          property: host
+      # Render's proxy sits in front of us; without this the rate limiter buckets
+      # every user under the proxy's IP and one caller can exhaust everyone's
+      # budget. These are Render's private ranges.
+      - key: TRUSTED_PROXY_IPS
+        value: 10.0.0.0/8,172.16.0.0/12,100.64.0.0/10
+
+      # --- email: production refuses to boot without a host ---
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: SMTP_FROM
+        sync: false
+      - key: SMTP_TLS
+        value: "true"
+
+      # --- AI provider(s). At least one, or CV parsing and interviews fail. ---
+      - key: OPENAI_API_KEYS
+        sync: false
+      - key: ANTHROPIC_API_KEYS
+        sync: false
+      - key: LLM_DEFAULT_MODEL
+        value: openai/gpt-4o-mini
+      - key: LLM_FALLBACK_MODELS
+        value: openai/gpt-4o-mini
+
+      # --- Stripe: optional. The free plan works without it; paid plans show
+      #     "Coming soon" until a plan has a stripe_price_id. ---
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: STRIPE_SUCCESS_URL
+        sync: false
+      - key: STRIPE_CANCEL_URL
+        sync: false
+
+      # --- Google OAuth: optional; the button hides itself when unset.
+      #     Redirect URI must be https://<api-host>/api/v1/auth/google/callback
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_REDIRECT_URI
+        sync: false
+
+  # ------------------------------------------------------------------ WEB ----
+  - type: web
+    name: aptil-web
+    runtime: docker
+    plan: starter
+    region: oregon
+    rootDir: frontend
+    dockerfilePath: ./Dockerfile
+    envVars:
+      # Same-origin proxy: the browser calls /api on this host and
+      # frontend/src/middleware.ts forwards it to the API internally. Nothing
+      # about the API URL is baked into the client bundle, so this image is
+      # portable and there is no CORS to get wrong. Middleware runs per request,
+      # so this really is read at server start rather than at build time —
+      # unlike next.config rewrites, which are frozen into the build.
+      - key: API_PROXY_TARGET
+        fromService:
+          name: aptil-api
+          type: web
+          property: hostport
+      # "/" means same origin once the trailing slash is stripped. NOT "" —
+      # Docker ignores an empty build arg and falls back to the Dockerfile's
+      # ARG default, which would bake http://localhost:8000 into the bundle.
+      - key: NEXT_PUBLIC_API_BASE_URL
+        value: "/"
+      - key: NODE_ENV
+        value: production
+
+  # --------------------------------------------------------------- WORKER ----
+  # Runs CV parsing, résumé tailoring, and the Playwright apply engine.
+  # Chromium needs headroom — do not drop this below `starter`.
+  - type: worker
+    name: aptil-worker
+    runtime: docker
+    plan: starter
+    region: oregon
+    rootDir: backend
+    dockerfilePath: ./Dockerfile.worker
+    dockerCommand: >-
+      celery -A app.workers.celery_app.celery worker
+      --loglevel=info --concurrency=2
+    envVars:
+      - fromGroup: aptil-shared
+
+  # ----------------------------------------------------------------- BEAT ----
+  # The scheduler. Without it nothing is discovered, matched, or applied to —
+  # the dashboard just stays empty.
+  - type: worker
+    name: aptil-beat
+    runtime: docker
+    plan: starter
+    region: oregon
+    rootDir: backend
+    dockerfilePath: ./Dockerfile
+    dockerCommand: celery -A app.workers.celery_app.celery beat --loglevel=info
+    envVars:
+      - fromGroup: aptil-shared
+
+# The worker and beat need the same configuration as the API. Put it in one
+# group so there is a single place to edit it, and attach the group to all three
+# in the dashboard after the first deploy.
+envVarGroups:
+  - name: aptil-shared
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: SECRET_KEY
+        sync: false
+      - key: CREDENTIAL_ENCRYPTION_KEY
+        sync: false
+      - key: MONGO_URL
+        sync: false
+      - key: MONGO_DB
+        value: aptil
+      - key: REDIS_URL
+        sync: false
+      - key: MINIO_ENDPOINT
+        sync: false
+      - key: MINIO_ROOT_USER
+        sync: false
+      - key: MINIO_ROOT_PASSWORD
+        sync: false
+      - key: MINIO_BUCKET
+        value: aptil-uploads
+      - key: MINIO_SECURE
+        value: "true"
+      # R2 -> auto; AWS S3 -> the bucket's region. Must match the API's value.
+      - key: MINIO_REGION
+        value: auto
+      - key: FRONTEND_BASE_URL
+        sync: false
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: SMTP_FROM
+        sync: false
+      - key: OPENAI_API_KEYS
+        sync: false
+      - key: LLM_DEFAULT_MODEL
+        value: openai/gpt-4o-mini
+      - key: LLM_FALLBACK_MODELS
+        value: openai/gpt-4o-mini
+      # Connector queries the beat scheduler runs. WITHOUT THIS NOTHING IS EVER
+      # DISCOVERED. Example (Greenhouse + Lever boards need no API key):
+      #   [{"source":"greenhouse","query":{"board":"stripe","company":"Stripe"}},{"source":"lever","query":{"company":"spotify","company_name":"Spotify"}},{"source":"ashby","query":{"board":"ramp","company":"Ramp"}}]
+      - key: SOURCING_JOBS_JSON
+        sync: false
+      - key: SOURCING_INTERVAL_MINUTES
+        value: "60"
+      - key: MATCHING_INTERVAL_MINUTES
+        value: "30"
+      - key: APPLY_INTERVAL_MINUTES
+        value: "15"
