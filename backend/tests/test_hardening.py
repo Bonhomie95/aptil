@@ -275,9 +275,9 @@ def test_scoring_projection_carries_everything_score_job_reads():
     silently scores lower instead of failing."""
     from app.services.matching import ScoredJob
 
-    assert {"id", "company", "title", "location", "remote", "description"} == set(
-        ScoredJob.model_fields
-    )
+    assert {
+        "id", "company", "title", "location", "remote", "description", "ats_type"
+    } == set(ScoredJob.model_fields)
     assert "raw" not in ScoredJob.model_fields
 
 

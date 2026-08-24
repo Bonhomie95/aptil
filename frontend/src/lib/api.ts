@@ -532,10 +532,10 @@ export const api = {
   subscription: () => request<Subscription>("/billing/subscription"),
 
   // --- jobs ---
-  applications: (params?: { status?: string; includeNeedsYou?: boolean }) => {
+  applications: (params?: { status?: string; includeAll?: boolean }) => {
     const qs = new URLSearchParams();
     if (params?.status) qs.set("status", params.status);
-    if (params?.includeNeedsYou) qs.set("include_needs_you", "true");
+    if (params?.includeAll) qs.set("include_all", "true");
     const q = qs.toString();
     return request<Application[]>(`/jobs/applications${q ? `?${q}` : ""}`);
   },
@@ -551,7 +551,6 @@ export const api = {
     request<{
       by_status: Record<string, number>;
       total: number;
-      needs_you: number;
       applications_used: number;
     }>("/jobs/stats"),
   updateApplicationStatus: (id: string, status: string) =>

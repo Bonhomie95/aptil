@@ -64,12 +64,12 @@ async def test_excluded_company_never_becomes_an_application(client):
     await profile.save()
 
     good = Job(
-        fingerprint=uuid.uuid4().hex, source="adzuna",
+        fingerprint=uuid.uuid4().hex, source="adzuna", ats_type="greenhouse",
         apply_url="https://x/1", company="Good Clinic",
         title="Registered Nurse", description="patient care triage",
     )
     bad = Job(
-        fingerprint=uuid.uuid4().hex, source="adzuna",
+        fingerprint=uuid.uuid4().hex, source="adzuna", ats_type="greenhouse",
         apply_url="https://x/2", company="Bad Hospital, Inc.",
         title="Registered Nurse", description="patient care triage",
     )
@@ -89,14 +89,17 @@ async def test_excluded_company_never_becomes_an_application(client):
 
 
 # --- the dashboard filter -------------------------------------------------
-async def test_default_view_hides_intervention_rows(client):
+async def test_dashboard_shows_only_applyable_and_successful(client):
+    """A job Aptil could not apply to (parked / failed) is hidden entirely — no
+    count, no toggle. The dashboard shows only the pipeline toward a real
+    application and genuine employer outcomes."""
     email = await _register(client)
     tokens = await _login(client, email)
     user = await User.find_one(User.email == email)
 
     async def _app(status, needs_action=None):
         job = Job(
-            fingerprint=uuid.uuid4().hex, source="adzuna",
+            fingerprint=uuid.uuid4().hex, source="web_search", ats_type="greenhouse",
             apply_url="https://x/y", company="Acme", title="Nurse",
         )
         await job.insert()
@@ -109,40 +112,33 @@ async def test_default_view_hides_intervention_rows(client):
 
     await _app(ApplicationStatus.SUBMITTED.value)
     await _app(ApplicationStatus.QUEUED.value)
-    await _app(ApplicationStatus.NEEDS_INFO.value, "add_credential")   # hidden
-    await _app(ApplicationStatus.NEEDS_INFO.value, "finish_manually")  # hidden
-    # Auto-handled: system does the work, so it stays visible as "pending".
-    await _app(ApplicationStatus.NEEDS_INFO.value, "awaiting_email_verification")
+    await _app(ApplicationStatus.MATCHED.value)
+    await _app(ApplicationStatus.INTERVIEW.value)
+    # These must be hidden — Aptil could not complete them:
+    await _app(ApplicationStatus.NEEDS_INFO.value, "add_credential")
+    await _app(ApplicationStatus.NEEDS_INFO.value, "apply_on_employer_site")
+    await _app(ApplicationStatus.FAILED.value)
 
     default = await client.get("/api/v1/jobs/applications", headers=_auth(tokens))
-    actions = [a["needs_action"] for a in default.json()]
-    assert "add_credential" not in actions
-    assert "finish_manually" not in actions
-    # kept:
-    assert "awaiting_email_verification" in actions
-    assert None in actions  # the submitted + queued rows
+    statuses = sorted({a["status"] for a in default.json()})
+    assert statuses == ["interview", "matched", "queued", "submitted"]
+    assert "needs_info" not in statuses
+    assert "failed" not in statuses
 
+    # The parked/failed rows still exist and are reachable with include_all,
+    # they are just never shown by default.
     allrows = await client.get(
-        "/api/v1/jobs/applications?include_needs_you=true", headers=_auth(tokens)
+        "/api/v1/jobs/applications?include_all=true", headers=_auth(tokens)
     )
-    all_actions = [a["needs_action"] for a in allrows.json()]
-    assert "add_credential" in all_actions
-    assert "finish_manually" in all_actions
+    all_statuses = {a["status"] for a in allrows.json()}
+    assert "needs_info" in all_statuses
+    assert "failed" in all_statuses
 
 
-async def test_stats_reports_the_hidden_count(client):
+async def test_stats_no_longer_advertises_a_needs_you_pile(client):
+    """The 'N applications need a step from you' surface was removed — stats
+    must not carry that count any more."""
     email = await _register(client)
     tokens = await _login(client, email)
-    user = await User.find_one(User.email == email)
-    job = Job(
-        fingerprint=uuid.uuid4().hex, source="adzuna",
-        apply_url="https://x/y", company="Acme", title="Nurse",
-    )
-    await job.insert()
-    await JobApplication(
-        user_id=user.id, tenant_id=user.tenant_id, job_id=job.id,
-        status=ApplicationStatus.NEEDS_INFO.value, needs_action="add_credential",
-    ).insert()
-
     stats = await client.get("/api/v1/jobs/stats", headers=_auth(tokens))
-    assert stats.json()["needs_you"] >= 1
+    assert "needs_you" not in stats.json()

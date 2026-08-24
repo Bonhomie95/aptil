@@ -13,6 +13,7 @@ from app.services.ats.base import AtsAdapter
 
 class LeverAdapter(AtsAdapter):
     ats_type = "lever"
+    auto_submits = True
 
     apply_hosts = ("lever.co",)
 

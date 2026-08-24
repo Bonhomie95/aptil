@@ -76,12 +76,12 @@ async def test_matching_excludes_other_countries(client, _):
     await profile.save()
 
     us_job = Job(
-        fingerprint=uuid.uuid4().hex, source="web_search", apply_url="https://x/1",
+        fingerprint=uuid.uuid4().hex, source="web_search", ats_type="greenhouse", apply_url="https://x/1",
         company="Acme", title="Site Reliability Engineer",
         description="kubernetes terraform observability", location="Remote, USA",
     )
     sg_job = Job(
-        fingerprint=uuid.uuid4().hex, source="web_search", apply_url="https://x/2",
+        fingerprint=uuid.uuid4().hex, source="web_search", ats_type="greenhouse", apply_url="https://x/2",
         company="Globex", title="Site Reliability Engineer",
         description="kubernetes terraform observability",
         location="Singapore, Singapore",

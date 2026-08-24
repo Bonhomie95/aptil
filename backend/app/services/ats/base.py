@@ -496,6 +496,12 @@ class AtsAdapter(ABC):
     #: ``ats_type`` this adapter handles (matches ``Job.ats_type``).
     ats_type: str = ""
 
+    #: True only for adapters that actually submit an application end to end
+    #: (Greenhouse/Lever/Ashby). Workday parks (multi-step wizard) and company
+    #: pages have no adapter — those are NOT auto-appliable, so we never turn
+    #: them into dashboard applications the user would just have to finish.
+    auto_submits: bool = False
+
     #: CSS selectors tried in order for each standard field.
     name_selectors: list[str] = []
     first_name_selectors: list[str] = []

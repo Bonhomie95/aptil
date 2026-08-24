@@ -9,6 +9,7 @@ from typing import Any
 from pydantic import Field
 from pymongo import ASCENDING, IndexModel
 
+from app.core.config import settings
 from app.db.base import TenantDocument, TimestampedDocument
 
 
@@ -52,6 +53,15 @@ class Job(TimestampedDocument):
             IndexModel([("company", ASCENDING)]),
             IndexModel([("title", ASCENDING)]),
             IndexModel([("created_at", ASCENDING)]),
+            # Retention TTL: expire a posting this long after it was last seen
+            # (updated_at is refreshed on every re-discovery). Keeps the shared
+            # pool fresh and bounded. 7 days by default; see JOB_RETENTION_DAYS.
+            IndexModel(
+                [("updated_at", ASCENDING)],
+                # 0 = disabled -> ~100 years, so it never expires (an
+                # expireAfterSeconds of 0 would delete everything immediately).
+                expireAfterSeconds=(settings.JOB_RETENTION_DAYS or 36500) * 86400,
+            ),
         ]
 
 

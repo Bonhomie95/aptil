@@ -28,7 +28,6 @@ import {
 type Stats = {
   by_status: Record<string, number>;
   total: number;
-  needs_you: number;
   applications_used: number;
 };
 
@@ -115,17 +114,16 @@ export default function DashboardPage() {
   const [searching, setSearching] = useState(false);
   const [automation, setAutomation] = useState<AutomationStatus | null>(null);
   const [automationBusy, setAutomationBusy] = useState(false);
-  const [showNeedsYou, setShowNeedsYou] = useState(false);
   const [applyingBatch, setApplyingBatch] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
-  const loadData = useCallback(async (quiet = false, needsYou = showNeedsYou) => {
+  const loadData = useCallback(async (quiet = false) => {
     if (!quiet) setDataError(null);
     try {
       const [s, a, b, auto] = await Promise.all([
         api.stats(),
-        api.applications({ includeNeedsYou: needsYou }),
+        api.applications(),
         api.subscription(),
         api.getAutomation(),
       ]);
@@ -142,7 +140,7 @@ export default function DashboardPage() {
         );
       }
     }
-  }, [showNeedsYou]);
+  }, []);
 
   useEffect(() => {
     if (!user) return;
@@ -526,28 +524,6 @@ export default function DashboardPage() {
               <Stat label="Interviews" value={stats?.by_status?.interview ?? 0} />
               <Stat label="Offers" value={stats?.by_status?.offer ?? 0} />
             </div>
-            {(stats?.needs_you ?? 0) > 0 && (
-              <button
-                type="button"
-                onClick={() => {
-                  const next = !showNeedsYou;
-                  setShowNeedsYou(next);
-                  // Pass the new value explicitly — the closure's showNeedsYou is
-                  // still the old one until the next render.
-                  loadData(true, next);
-                }}
-                className="mt-4 flex w-full items-center justify-between rounded-lg border border-border px-3 py-2 text-left text-sm transition-colors hover:bg-muted/40"
-              >
-                <span>
-                  <span className="font-medium">{stats?.needs_you}</span>{" "}
-                  {stats?.needs_you === 1 ? "application needs" : "applications need"}{" "}
-                  a step from you
-                </span>
-                <span className="text-xs text-accent">
-                  {showNeedsYou ? "Hide" : "Show"}
-                </span>
-              </button>
-            )}
           </section>
 
           {sub && (

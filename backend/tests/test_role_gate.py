@@ -29,7 +29,7 @@ def _job(title, **kw):
     from app.models.job import Job
 
     return Job(
-        fingerprint=uuid.uuid4().hex, source="web_search",
+        fingerprint=uuid.uuid4().hex, source="web_search", ats_type="greenhouse",
         apply_url="https://x/y", company=kw.pop("company", "Acme"),
         title=title, **kw,
     )
@@ -106,3 +106,40 @@ async def test_matching_gates_role_and_dedupes(client):
     assert not any("Machine Learning" in t for t in titles)
     # the duplicated platform role appears exactly once
     assert sum("Core Platform" in t for t in titles) == 1
+
+
+async def test_matching_skips_jobs_it_cannot_auto_apply(client):
+    """Company-hosted pages (ats_type None) and park-only ATSes (Workday) must
+    never become applications — the user only sees jobs Aptil can apply to."""
+    from app.models.job import Job, JobApplication
+    from app.models.profile import Profile
+    from app.models.user import User
+    from app.services.matching import match_jobs_for_user
+
+    email = await _register(client)
+    user = await User.find_one(User.email == email)
+    profile = await Profile.find_one(Profile.user_id == user.id)
+    profile.target_titles = ["Platform Engineer"]
+    profile.skills = ["kubernetes", "terraform"]
+    await profile.save()
+
+    def _mk(ats):
+        return Job(
+            fingerprint=uuid.uuid4().hex, source="web_search", ats_type=ats,
+            apply_url="https://x/y", company="Acme", title="Platform Engineer",
+            description="kubernetes terraform", location="Remote, USA",
+        )
+
+    await _mk("greenhouse").insert()   # appliable
+    await _mk(None).insert()           # company site -> skip
+    await _mk("workday").insert()      # park-only -> skip
+
+    await match_jobs_for_user(user.id, limit=20, min_score=0.0)
+
+    apps = await JobApplication.find(JobApplication.user_id == user.id).to_list()
+    ats_types = set()
+    for a in apps:
+        job = await Job.get(a.job_id)
+        if job:
+            ats_types.add(job.ats_type)
+    assert ats_types == {"greenhouse"}

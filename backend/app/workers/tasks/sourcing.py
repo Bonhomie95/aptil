@@ -182,25 +182,39 @@ def source_for_user(user_id: str) -> dict:
             ]
         return run_async(_persist_async(postings))
 
+    from app.services.job_cache import mark_fetched, was_fetched_recently
+
     fetched = 0
+    skipped = 0
     queries = _queries_for_profile(profile)
     for source_name in query_sources:
         connector = get_connector(source_name)
         if connector is None:
             continue
         for query in queries:
+            # Another user's recent sweep already pulled this exact query; its
+            # jobs are in the pool, so reuse them instead of calling the API.
+            if was_fetched_recently(source_name, query):
+                skipped += 1
+                continue
             fetched += _ingest(connector.fetch(query))
+            mark_fetched(source_name, query)
     for source_name in feed_sources:
         connector = get_connector(source_name)
-        if connector is not None:
-            fetched += _ingest(connector.fetch({}))
+        if connector is None:
+            continue
+        if was_fetched_recently(source_name, {}):
+            skipped += 1
+            continue
+        fetched += _ingest(connector.fetch({}))
+        mark_fetched(source_name, {})
 
     # 40, not 20: the dashboard is a user's whole pipeline, and the gates
     # (threshold + dedupe + max-per-company) already keep it relevant, so a
     # larger cap fills it faster without adding noise.
     created = run_async(match_jobs_for_user(uid, limit=40))
     log.info("source_for_user_done", user_id=user_id,
-             sources=[*query_sources, *feed_sources],
+             sources=[*query_sources, *feed_sources], cached_skips=skipped,
              queries=len(queries), new_jobs=fetched, matched=created)
     return {"user_id": user_id, "fetched": fetched, "matched": created}
 

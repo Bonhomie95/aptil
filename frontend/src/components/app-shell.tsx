@@ -7,6 +7,7 @@ import {
   Briefcase,
   CreditCard,
   HelpCircle,
+  Inbox,
   LayoutGrid,
   LogOut,
   Menu,
@@ -24,6 +25,7 @@ type Item = { href: string; label: string; icon: typeof LayoutGrid };
 const NAV: Item[] = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutGrid },
   { href: "/jobs", label: "Jobs", icon: Briefcase },
+  { href: "/inbox", label: "Inbox", icon: Inbox },
   { href: "/interview", label: "Interview", icon: Mic },
   { href: "/plans", label: "Plans", icon: CreditCard },
   { href: "/settings", label: "Settings", icon: Settings },

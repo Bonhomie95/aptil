@@ -137,6 +137,16 @@ class Settings(BaseSettings):
     # Cap on how many postings one connector run contributes, so a single large
     # board cannot swamp the shared pool.
     MAX_POSTINGS_PER_SOURCE: int = 300
+    # Sustainability: don't re-hit a board/API for a (source, query) we already
+    # fetched within this many hours — the jobs are already in the shared pool,
+    # so every user targeting the same role reuses one fetch instead of each
+    # triggering their own. 0 disables the cache. Raise toward 168 (7 days) for
+    # maximum API reduction at the cost of freshness; 24h refreshes daily.
+    JOB_CACHE_TTL_HOURS: int = 24
+    # How long a job survives in the pool without being re-discovered. Re-seeing
+    # a posting refreshes it; one not seen for this many days expires, keeping
+    # the pool fresh and bounded. 0 disables expiry.
+    JOB_RETENTION_DAYS: int = 7
 
     # --- Scheduler (Celery beat) ---
     # Set to 0 to disable a periodic job entirely.

@@ -15,6 +15,7 @@ from app.services.ats.base import AtsAdapter
 
 class AshbyAdapter(AtsAdapter):
     ats_type = "ashby"
+    auto_submits = True
 
     apply_hosts = ("ashbyhq.com",)
 

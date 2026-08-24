@@ -100,6 +100,14 @@ async def upsert_job(posting: dict) -> tuple[Job | None, bool]:
     fp = fingerprint(company, title, posting.get("location"))
     existing = await Job.find_one(Job.fingerprint == fp)
     if existing:
+        # Re-seeing a posting keeps it alive: refresh updated_at so the
+        # retention TTL (which expires jobs not seen for JOB_RETENTION_DAYS)
+        # only reaps postings that have genuinely gone stale.
+        existing.touch()
+        try:
+            await existing.save()
+        except Exception as exc:  # noqa: BLE001 - a failed refresh is not fatal
+            log.debug("job_refresh_failed", fingerprint=fp, error=str(exc)[:120])
         return existing, False
 
     description = posting.get("description")

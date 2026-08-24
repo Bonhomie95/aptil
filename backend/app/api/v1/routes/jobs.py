@@ -17,6 +17,19 @@ from app.models.user import User
 from app.services import billing
 
 router = APIRouter()
+
+# Statuses shown on the dashboard by default: the pipeline toward a real
+# application plus genuine employer outcomes. Parked (needs_info) and failed are
+# excluded — a job Aptil could not apply to is never surfaced.
+_VISIBLE_STATUSES = [
+    ApplicationStatus.MATCHED.value,
+    ApplicationStatus.QUEUED.value,
+    ApplicationStatus.SUBMITTED.value,
+    ApplicationStatus.CONFIRMED.value,
+    ApplicationStatus.INTERVIEW.value,
+    ApplicationStatus.OFFER.value,
+    ApplicationStatus.REJECTED.value,
+]
 log = get_logger(__name__)
 
 # Statuses a user is allowed to set by hand (tracking their own pipeline).
@@ -221,22 +234,25 @@ async def my_applications(
     limit: int = Query(default=100, ge=1, le=200),
     offset: int = Query(default=0, ge=0, le=10_000),
     status_filter: str | None = Query(default=None, alias="status", max_length=40),
-    include_needs_you: bool = Query(
+    include_all: bool = Query(
         default=False,
-        description="Include applications that need the user to act. Hidden by "
-        "default so the dashboard shows what Aptil is doing, not a to-do list.",
+        description="Include parked/failed applications. Off by default so the "
+        "dashboard shows only jobs Aptil could apply to — pending, applied, or "
+        "further along — and never a pile of things it couldn't complete.",
     ),
     user: User = Depends(get_current_user),
 ):
-    from app.workers.tasks.apply import USER_INTERVENTION_ACTIONS
-
     criteria: dict = {"user_id": user.id, "tenant_id": user.tenant_id}
     if status_filter:
         criteria["status"] = status_filter
-    if not include_needs_you:
-        # Rows with no needs_action (auto-handled or in-flight) are kept: $nin
-        # matches null/missing. Only the "you must act" pile is hidden.
-        criteria["needs_action"] = {"$nin": list(USER_INTERVENTION_ACTIONS)}
+    elif not include_all:
+        # Only the pipeline toward a real application: matched (pending),
+        # queued (in flight), submitted/confirmed, and the human outcomes
+        # (interview/offer/rejected). Everything Aptil could NOT complete —
+        # needs_info (parked, captcha, credential, company-site) and failed —
+        # is hidden entirely. The user only ever sees jobs it applied to or is
+        # applying to.
+        criteria["status"] = {"$in": _VISIBLE_STATUSES}
 
     # Best match first: the primary action on this list is "Apply", so the roles
     # the engine rates highest should be the ones the user sees without
@@ -324,20 +340,9 @@ async def dashboard_stats(user: User = Depends(get_current_user)):
     by_status = {row["_id"]: row["count"] for row in rows if row.get("_id")}
     sub = await billing.get_active_subscription(user.tenant_id)
 
-    # How many rows are hidden from the default view because they need the user.
-    # Surfaced as a single number so the dashboard can offer "N need you" without
-    # putting the pile front and centre.
-    from app.workers.tasks.apply import USER_INTERVENTION_ACTIONS
-
-    needs_you = await JobApplication.find(
-        JobApplication.user_id == user.id,
-        {"needs_action": {"$in": list(USER_INTERVENTION_ACTIONS)}},
-    ).count()
-
     return {
         "by_status": by_status,
         "total": sum(by_status.values()),
-        "needs_you": needs_you,
         "applications_used": sub.applications_used if sub else 0,
     }
 

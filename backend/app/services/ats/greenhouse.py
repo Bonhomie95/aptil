@@ -13,6 +13,7 @@ from app.services.ats.base import AtsAdapter
 
 class GreenhouseAdapter(AtsAdapter):
     ats_type = "greenhouse"
+    auto_submits = True
 
     # Employers may point their Greenhouse board at their own careers site
     # (Stripe's redirects to stripe.com, which has no form on the page). Landing

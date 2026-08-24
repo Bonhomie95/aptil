@@ -27,6 +27,7 @@ from app.core.logging import get_logger
 from app.models.enums import ApplicationStatus
 from app.models.job import Job, JobApplication
 from app.models.profile import Profile
+from app.services.ats import can_auto_apply
 from app.services.geo import location_allowed
 
 log = get_logger(__name__)
@@ -64,6 +65,9 @@ class ScoredJob(BaseModel):
     location: str | None = None
     remote: bool | None = None
     description: str | None = None
+    # Needed by the auto-appliable filter in match_jobs_for_user — without it
+    # the projection drops ats_type and every job looks un-appliable.
+    ats_type: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -490,6 +494,11 @@ async def match_jobs_for_user(
             continue
         # Location gate: chose USA -> drop clearly non-US postings.
         if not location_allowed(job.location, allowed_countries):
+            continue
+        # Only surface jobs Aptil can actually apply to end to end. Company-
+        # hosted pages and park-only ATSes (Workday) are skipped entirely — the
+        # user never sees a job that would just sit in a "you finish it" pile.
+        if not can_auto_apply(getattr(job, "ats_type", None)):
             continue
         # Role gate: the title must actually be one of the roles the user wants.
         # Without this an SRE seeker's list fills with unrelated senior
