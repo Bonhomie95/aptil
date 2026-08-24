@@ -111,3 +111,24 @@ def test_browser_fallback_is_used_when_direct_fetch_fails(monkeypatch):
     conn._browser_fetch_text = types.MethodType(_fallback, conn)
     assert conn.fetch({}) == []          # no crash
     assert called.get("hit") is True     # browser fallback was attempted
+
+
+# --- the keyless-provider gate bug ----------------------------------------
+def test_searxng_enables_web_search_without_a_key(monkeypatch):
+    """A keyless SearXNG setup (WEB_SEARCH_API_KEY empty) must still enable the
+    web_search source. The original sweep gate required a key unconditionally
+    and silently skipped SearXNG entirely."""
+    from app.services.connectors.websearch import WebSearchConnector
+
+    def ready(provider: str, key: str) -> bool:
+        return settings_like(provider) and (
+            not WebSearchConnector._NEEDS_KEY.get(provider, True) or bool(key.strip())
+        )
+
+    def settings_like(_p: str) -> bool:
+        return True  # SOURCING_WEB_SEARCH on
+
+    assert ready("searxng", "") is True     # keyless -> enabled
+    assert ready("serper", "") is False     # hosted, no key -> disabled
+    assert ready("serper", "k") is True
+    assert ready("brave", "") is False

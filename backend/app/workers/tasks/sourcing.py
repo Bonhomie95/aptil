@@ -141,7 +141,17 @@ def source_for_user(user_id: str) -> dict:
     # optional and off by default now; both feed the same pool if enabled.
     # Query-based sources take the user's role/location per call.
     query_sources: list[str] = []
-    if settings.SOURCING_WEB_SEARCH and settings.WEB_SEARCH_API_KEY.strip():
+    # Web search is ready when it's enabled AND either its provider is keyless
+    # (SearXNG, self-hosted) or an API key is set. The old gate required a key
+    # unconditionally, which silently skipped a keyless SearXNG setup.
+    from app.services.connectors.websearch import WebSearchConnector
+
+    _provider = settings.WEB_SEARCH_PROVIDER.strip().lower()
+    _web_search_ready = settings.SOURCING_WEB_SEARCH and (
+        not WebSearchConnector._NEEDS_KEY.get(_provider, True)
+        or bool(settings.WEB_SEARCH_API_KEY.strip())
+    )
+    if _web_search_ready:
         query_sources.append("web_search")
     if settings.SOURCING_USE_ADZUNA:
         query_sources.append("adzuna")
