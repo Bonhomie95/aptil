@@ -79,5 +79,9 @@ class UserRead(BaseModel):
     # password instead of a current one it will never be given, and account
     # deletion already branches the same way.
     has_password: bool = True
+    # Automation preferences, so Settings toggles reflect the real stored state
+    # on load instead of guessing a default.
+    auto_apply: bool = True
+    auto_create_accounts: bool = True
 
     model_config = {"from_attributes": True}

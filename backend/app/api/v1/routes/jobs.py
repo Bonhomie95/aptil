@@ -523,6 +523,86 @@ async def apply_now(
     return QueueResponse(queued=1, detail="Queued for submission.")
 
 
+class ApplyBatchRequest(BaseModel):
+    # How many of the top matched jobs to submit now. Bounded so one click can
+    # never queue an unbounded batch.
+    count: int = Field(default=5, ge=1, le=25)
+
+
+@router.post(
+    "/applications/apply-batch",
+    response_model=QueueResponse,
+    dependencies=[Depends(RateLimiter(times=20, seconds=3600, scope="user"))],
+)
+async def apply_batch(
+    payload: ApplyBatchRequest,
+    user: User = Depends(get_verified_user),
+):
+    """Submit the top-N matched applications in one action (review-then-apply).
+
+    Picks the highest-scoring rows still in ``matched`` and queues them, best
+    first, stopping at the plan quota. Explicit per-batch consent (compliance
+    §1): nothing is submitted the user did not ask for.
+    """
+    from app.workers.tasks.apply import submit_application
+
+    rows = (
+        await JobApplication.find(
+            JobApplication.user_id == user.id,
+            JobApplication.tenant_id == user.tenant_id,
+            JobApplication.status == ApplicationStatus.MATCHED.value,
+        )
+        .sort([("match_score", -1), ("created_at", -1)])
+        .limit(payload.count)
+        .to_list()
+    )
+    if not rows:
+        return QueueResponse(queued=0, detail="No matched jobs to apply to yet.")
+
+    queued = 0
+    for app_row in rows:
+        # Re-check the quota before EACH submit, so a batch stops exactly at the
+        # plan limit instead of overshooting.
+        if not await billing.can_apply(user.tenant_id):
+            break
+        app_row.status = ApplicationStatus.QUEUED.value
+        app_row.touch()
+        await app_row.save()
+        try:
+            submit_application.delay(str(app_row.id))
+            queued += 1
+        except Exception as exc:  # noqa: BLE001 - broker down mid-batch
+            app_row.status = ApplicationStatus.MATCHED.value
+            await app_row.save()
+            log.error("apply_batch_enqueue_failed",
+                      application_id=str(app_row.id), error=str(exc))
+            break
+
+    detail = (
+        f"Queued {queued} application{'s' if queued != 1 else ''} for submission."
+        if queued
+        else "Couldn't queue any — your plan's application limit may be reached."
+    )
+    return QueueResponse(queued=queued, detail=detail)
+
+
+class AutoApplyRequest(BaseModel):
+    enabled: bool
+
+
+@router.post("/auto-apply")
+async def set_auto_apply(
+    payload: AutoApplyRequest,
+    user: User = Depends(get_current_user),
+):
+    """Toggle background auto-apply. Off = discovery still runs, but the user
+    applies in batches themselves."""
+    user.auto_apply = payload.enabled
+    user.touch()
+    await user.save()
+    return {"enabled": user.auto_apply}
+
+
 # --- Automation control ---------------------------------------------------
 #
 # The engine applies for jobs in the user's name. That makes an off switch a

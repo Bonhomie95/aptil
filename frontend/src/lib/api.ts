@@ -200,6 +200,9 @@ export type Me = {
   onboarding_completed: boolean;
   /** False for Google-only accounts, which have no local password to confirm. */
   has_password: boolean;
+  /** Background auto-apply on, vs review-then-batch-apply. */
+  auto_apply?: boolean;
+  auto_create_accounts?: boolean;
 };
 
 export type Profile = {
@@ -578,6 +581,16 @@ export const api = {
       countries: { code: string; name: string }[];
       continents: { code: string; name: string; countries: string[] }[];
     }>("/jobs/search-locations"),
+  applyBatch: (count: number) =>
+    request<{ queued: number; detail: string | null }>(
+      "/jobs/applications/apply-batch",
+      { method: "POST", body: JSON.stringify({ count }) },
+    ),
+  setAutoApply: (enabled: boolean) =>
+    request<{ enabled: boolean }>("/jobs/auto-apply", {
+      method: "POST",
+      body: JSON.stringify({ enabled }),
+    }),
   setAutoCreate: (enabled: boolean) =>
     request<{ enabled: boolean }>("/account/auto-create-accounts", {
       method: "POST",

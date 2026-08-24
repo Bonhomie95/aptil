@@ -114,6 +114,10 @@ async def _enqueue_all() -> dict:
     users = await _eligible_users()
     dispatched = 0
     for user in users:
+        # Respect the per-user apply mode: with auto-apply off, discovery still
+        # ran for them, but nothing is submitted until they press Apply.
+        if not getattr(user, "auto_apply", True):
+            continue
         profile = await Profile.find_one(Profile.user_id == user.id)
         if profile is None:
             continue

@@ -13,6 +13,7 @@ import {
   Lock,
   ClipboardList,
   Plus,
+  Send,
   Wand2,
   Target,
   Trash2,
@@ -112,6 +113,7 @@ export default function SettingsPage() {
             onDone={setNotice}
           />
           <SearchPreferencesCard onNotice={setNotice} />
+          <ApplyModeCard onNotice={setNotice} />
           <DisclosuresCard onNotice={setNotice} />
           <AutoApplyCard onNotice={setNotice} />
           <CredentialsCard
@@ -792,6 +794,62 @@ function AutoApplyCard({ onNotice }: { onNotice: (s: string) => void }) {
         />
         <span className="text-sm">
           {enabled ? "On — accounts created automatically" : "Off — I'll handle sign-in sites myself"}
+        </span>
+      </label>
+    </Panel>
+  );
+}
+
+/** Toggle background auto-apply vs review-then-batch. Discovery/matching run
+ *  either way — this only decides whether matched jobs are submitted
+ *  automatically or wait for the user to press Apply on the dashboard. */
+function ApplyModeCard({ onNotice }: { onNotice: (s: string) => void }) {
+  const { user } = useSession();
+  const [override, setOverride] = useState<boolean | null>(null);
+  const [busy, setBusy] = useState(false);
+  const serverValue =
+    user && "auto_apply" in user
+      ? Boolean((user as { auto_apply?: boolean }).auto_apply)
+      : true;
+  const enabled = override ?? serverValue;
+
+  async function toggle() {
+    const next = !enabled;
+    setBusy(true);
+    setOverride(next);
+    try {
+      await api.setAutoApply(next);
+      onNotice(
+        next
+          ? "Auto-apply is on — Aptil submits your matches automatically."
+          : "Auto-apply is off — your matches wait on the dashboard until you press Apply.",
+      );
+    } catch {
+      setOverride(!next);
+      onNotice("Couldn't update that setting.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Panel
+      title="Apply automatically"
+      description="On: Aptil applies to your matches in the background. Off: matches are found and shown on your dashboard, and you apply to them in batches yourself (faster searches, more control)."
+      icon={<Send className="h-4 w-4 text-subtle" aria-hidden />}
+    >
+      <label className="flex cursor-pointer items-center gap-3">
+        <input
+          type="checkbox"
+          checked={enabled}
+          disabled={busy}
+          onChange={toggle}
+          className="h-4 w-4 rounded border-border accent-accent"
+        />
+        <span className="text-sm">
+          {enabled
+            ? "On — applying automatically in the background"
+            : "Off — I'll review and apply from the dashboard"}
         </span>
       </label>
     </Panel>

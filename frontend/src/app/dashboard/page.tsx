@@ -116,6 +116,7 @@ export default function DashboardPage() {
   const [automation, setAutomation] = useState<AutomationStatus | null>(null);
   const [automationBusy, setAutomationBusy] = useState(false);
   const [showNeedsYou, setShowNeedsYou] = useState(false);
+  const [applyingBatch, setApplyingBatch] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -207,6 +208,22 @@ export default function DashboardPage() {
       clearInterval(id);
     };
   }, [user, searching]);
+
+  async function applyTop(count: number) {
+    setApplyingBatch(true);
+    setNotice(null);
+    try {
+      const res = await api.applyBatch(count);
+      setNotice(res.detail ?? `Queued ${res.queued} for submission.`);
+      await loadData(true);
+    } catch (err) {
+      setNotice(
+        err instanceof Error ? err.message : "Couldn't queue that batch.",
+      );
+    } finally {
+      setApplyingBatch(false);
+    }
+  }
 
   async function runMatching() {
     setMatching(true);
@@ -311,6 +328,9 @@ export default function DashboardPage() {
     }
   }
 
+  const matchedCount =
+    apps?.filter((a) => a.status === "matched").length ?? 0;
+
   const openCount =
     apps?.filter((a) => !["rejected", "failed"].includes(a.status)).length ?? 0;
 
@@ -337,10 +357,34 @@ export default function DashboardPage() {
               </Button>
             </>
           ) : (
-            <Button variant="secondary" onClick={runMatching} loading={matching}>
-              {!matching && <RefreshCw className="h-4 w-4" aria-hidden />}
-              Find new matches
-            </Button>
+            <div className="flex flex-wrap items-center gap-2">
+              {matchedCount > 0 && (
+                <>
+                  <Button
+                    onClick={() => applyTop(5)}
+                    loading={applyingBatch}
+                    disabled={applyingBatch}
+                  >
+                    {!applyingBatch && <Send className="h-4 w-4" aria-hidden />}
+                    Apply top 5
+                  </Button>
+                  {matchedCount > 5 && (
+                    <Button
+                      variant="secondary"
+                      onClick={() => applyTop(10)}
+                      loading={applyingBatch}
+                      disabled={applyingBatch}
+                    >
+                      Apply top 10
+                    </Button>
+                  )}
+                </>
+              )}
+              <Button variant="secondary" onClick={runMatching} loading={matching}>
+                {!matching && <RefreshCw className="h-4 w-4" aria-hidden />}
+                Find new matches
+              </Button>
+            </div>
           )
         }
       />

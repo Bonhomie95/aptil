@@ -195,7 +195,10 @@ def source_for_user(user_id: str) -> dict:
         if connector is not None:
             fetched += _ingest(connector.fetch({}))
 
-    created = run_async(match_jobs_for_user(uid, limit=20))
+    # 40, not 20: the dashboard is a user's whole pipeline, and the gates
+    # (threshold + dedupe + max-per-company) already keep it relevant, so a
+    # larger cap fills it faster without adding noise.
+    created = run_async(match_jobs_for_user(uid, limit=40))
     log.info("source_for_user_done", user_id=user_id,
              sources=[*query_sources, *feed_sources],
              queries=len(queries), new_jobs=fetched, matched=created)
