@@ -153,17 +153,14 @@ class ProfileUpdate(BaseModel):
     @field_validator("target_countries")
     @classmethod
     def _clean_countries(cls, v: list[str] | None) -> list[str] | None:
-        """Keep only codes/continents Adzuna serves; a bad value silently
+        """Keep only codes/continents the search supports; a bad value silently
         widening the search to a country the user did not pick would be worse
         than dropping it."""
         if v is None:
             return None
-        from app.services.connectors.adzuna import (
-            ADZUNA_CONTINENTS,
-            ADZUNA_COUNTRIES,
-        )
+        from app.services.geo import CONTINENTS, SEARCH_COUNTRIES
 
-        allowed = set(ADZUNA_COUNTRIES) | set(ADZUNA_CONTINENTS)
+        allowed = set(SEARCH_COUNTRIES) | set(CONTINENTS)
         out: list[str] = []
         for raw in v:
             key = str(raw).strip().lower()

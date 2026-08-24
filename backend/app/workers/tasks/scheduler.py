@@ -31,7 +31,7 @@ async def _dispatch_per_user_sourcing() -> int:
     This is what keeps existing users' pipelines fresh between the events that
     trigger source_for_user directly (CV upload, "Find matches", target change).
     Each user's search is CV-driven and web-wide, so this replaced the old
-    aggregator "demand queries" path — which emitted Adzuna calls that now no-op.
+    aggregator "demand queries" path.
     """
     from app.workers.tasks.sourcing import source_for_user
 

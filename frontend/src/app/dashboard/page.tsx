@@ -115,6 +115,9 @@ export default function DashboardPage() {
   const [automation, setAutomation] = useState<AutomationStatus | null>(null);
   const [automationBusy, setAutomationBusy] = useState(false);
   const [applyingBatch, setApplyingBatch] = useState(false);
+  const [filterStatus, setFilterStatus] = useState("all");
+  const [filterLocation, setFilterLocation] = useState("");
+  const [sortBy, setSortBy] = useState<"score" | "recent">("score");
   const [stopping, setStopping] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -329,6 +332,22 @@ export default function DashboardPage() {
   const matchedCount =
     apps?.filter((a) => a.status === "matched").length ?? 0;
 
+  // Client-side filter + sort over the loaded pipeline. Cheap (<= 100 rows) and
+  // instant, no round-trip.
+  const visibleApps = (apps ?? [])
+    .filter((a) => filterStatus === "all" || a.status === filterStatus)
+    .filter((a) => {
+      const q = filterLocation.trim().toLowerCase();
+      if (!q) return true;
+      return (a.job?.location ?? "").toLowerCase().includes(q);
+    })
+    .slice()
+    .sort((x, y) =>
+      sortBy === "recent"
+        ? (y.created_at ?? "").localeCompare(x.created_at ?? "")
+        : (y.match_score ?? 0) - (x.match_score ?? 0),
+    );
+
   const openCount =
     apps?.filter((a) => !["rejected", "failed"].includes(a.status)).length ?? 0;
 
@@ -498,18 +517,70 @@ export default function DashboardPage() {
               />
             </div>
           ) : (
-            <ul className="space-y-3">
-              {apps.map((a) => (
-                <ApplicationRow
+            <>
+              <div className="mb-4 flex flex-wrap items-center gap-2">
+                <select
+                  aria-label="Filter by status"
+                  value={filterStatus}
+                  onChange={(e) => setFilterStatus(e.target.value)}
+                  className="h-9 rounded-lg border border-border bg-card px-3 text-sm outline-none focus:border-accent"
+                >
+                  <option value="all">All statuses</option>
+                  <option value="matched">Matched</option>
+                  <option value="queued">Queued</option>
+                  <option value="submitted">Submitted</option>
+                  <option value="interview">Interview</option>
+                  <option value="offer">Offer</option>
+                  <option value="rejected">Rejected</option>
+                </select>
+                <select
+                  aria-label="Sort by"
+                  value={sortBy}
+                  onChange={(e) => setSortBy(e.target.value as "score" | "recent")}
+                  className="h-9 rounded-lg border border-border bg-card px-3 text-sm outline-none focus:border-accent"
+                >
+                  <option value="score">Best match</option>
+                  <option value="recent">Most recent</option>
+                </select>
+                <input
+                  aria-label="Filter by location"
+                  value={filterLocation}
+                  onChange={(e) => setFilterLocation(e.target.value)}
+                  placeholder="Filter location (e.g. US, Remote)"
+                  className="h-9 flex-1 min-w-[10rem] rounded-lg border border-border bg-card px-3 text-sm outline-none placeholder:text-subtle focus:border-accent"
+                />
+                {(filterStatus !== "all" || filterLocation) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFilterStatus("all");
+                      setFilterLocation("");
+                    }}
+                    className="text-sm text-accent underline-offset-4 hover:underline"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+              {visibleApps.length === 0 ? (
+                <p className="rounded-xl border border-border bg-card px-5 py-8 text-center text-sm text-muted-foreground">
+                  No applications match these filters.
+                </p>
+              ) : (
+                <ul className="space-y-3">
+                  {visibleApps.map((a) => (
+                    <ApplicationRow
                   key={a.id}
                   app={a}
                   busy={busyId === a.id}
                   canApply={sub?.can_apply ?? false}
                   onApply={() => applyNow(a.id)}
-                  onStatus={(s) => setStatus(a.id, s)}
-                />
-              ))}
-            </ul>
+                      onStatus={(s) => setStatus(a.id, s)}
+                    />
+                  ))}
+                </ul>
+              )}
+            </>
           )}
         </div>
 

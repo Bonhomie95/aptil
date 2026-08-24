@@ -37,7 +37,7 @@ class JobConnector(ABC):
 
     #: JobSource enum value, e.g. "greenhouse".
     source: str = "other"
-    #: ATS the apply engine routes to, or None for aggregators (e.g. Adzuna).
+    #: ATS the apply engine routes to, or None for web-search / aggregator hits.
     ats_type: str | None = None
 
     @abstractmethod

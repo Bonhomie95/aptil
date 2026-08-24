@@ -354,7 +354,7 @@ def _target_country_codes(profile: Profile) -> set[str]:
 
     Empty when they picked nothing, which disables the location filter.
     """
-    from app.services.connectors.adzuna import resolve_countries
+    from app.services.geo import resolve_countries
 
     return set(resolve_countries(getattr(profile, "target_countries", None) or []))
 
@@ -458,9 +458,13 @@ async def match_jobs_for_user(
     existing_job_ids = {row["job_id"] for row in existing_rows if row.get("job_id")}
 
     # Bounded, newest-first scan instead of loading the entire collection, and
-    # projected to the fields scoring actually reads (see ScoredJob).
+    # projected to the fields scoring actually reads (see ScoredJob). Restricted
+    # to jobs Aptil can actually apply to, so the scan budget surfaces appliable
+    # matches instead of being spent on company-hosted pages we would drop.
+    from app.services.ats import auto_appliable_ats_types
+
     jobs = (
-        await Job.find()
+        await Job.find({"ats_type": {"$in": auto_appliable_ats_types()}})
         .sort(-Job.created_at)
         .limit(MAX_JOBS_CONSIDERED)
         .project(ScoredJob)

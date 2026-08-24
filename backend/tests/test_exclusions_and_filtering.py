@@ -64,12 +64,12 @@ async def test_excluded_company_never_becomes_an_application(client):
     await profile.save()
 
     good = Job(
-        fingerprint=uuid.uuid4().hex, source="adzuna", ats_type="greenhouse",
+        fingerprint=uuid.uuid4().hex, source="web_search", ats_type="greenhouse",
         apply_url="https://x/1", company="Good Clinic",
         title="Registered Nurse", description="patient care triage",
     )
     bad = Job(
-        fingerprint=uuid.uuid4().hex, source="adzuna", ats_type="greenhouse",
+        fingerprint=uuid.uuid4().hex, source="web_search", ats_type="greenhouse",
         apply_url="https://x/2", company="Bad Hospital, Inc.",
         title="Registered Nurse", description="patient care triage",
     )

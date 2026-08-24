@@ -123,8 +123,8 @@ class Profile(TenantDocument):
     # "acme" still excludes it.
     excluded_companies: list[str] = Field(default_factory=list)
     # Where the user wants jobs, independent of their home address. ISO-2
-    # country codes and/or continent names ("europe"), expanded by the Adzuna
-    # connector. Empty = fall back to their address country / the deployment
+    # country codes and/or continent names ("europe"), expanded by the search
+    # layer. Empty = fall back to their address country / the deployment
     # default. Choosing countries here IS how a user excludes the rest.
     target_countries: list[str] = Field(default_factory=list)
     # Voluntary EEO answers, replayed into application forms that ask. Never

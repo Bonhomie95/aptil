@@ -99,3 +99,21 @@ async def test_matching_excludes_other_countries(client, _):
             locs.add(job.location)
     assert "Remote, USA" in locs
     assert "Singapore, Singapore" not in locs
+
+
+def test_comprehensive_country_detection_catches_latam_and_europe():
+    """Regression: the original list missed Ecuador/Peru so LatAm jobs leaked
+    through a US filter. Detection must cover countries beyond the search
+    targets, precisely so they can be excluded."""
+    for loc, code in [
+        ("Ecuador, Ecuador; Lima, Peru", "ec"),
+        ("Lima, Peru", "pe"),
+        ("Quito, Ecuador", "ec"),
+        ("Toronto, Canada", "ca"),
+        ("Berlin, Germany", "de"),
+        ("Bogotá, Colombia", "co"),
+        ("Manila, Philippines", "ph"),
+    ]:
+        assert code in detect_countries(loc), loc
+        # ...and each is excluded for a US-only target.
+        assert location_allowed(loc, {"us"}) is False, loc

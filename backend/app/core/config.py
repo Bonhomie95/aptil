@@ -97,8 +97,6 @@ class Settings(BaseSettings):
     STRIPE_CANCEL_URL: str = "http://localhost:3000/billing/cancel"
 
     # --- Job sources ---
-    ADZUNA_APP_ID: str = ""
-    ADZUNA_APP_KEY: str = ""
 
     # --- Web-search discovery (the primary, aggregator-independent source) ---
     # Finds job postings across the OPEN WEB via a real search API — never by
@@ -116,9 +114,6 @@ class Settings(BaseSettings):
     WEB_SEARCH_ENDPOINT: str = ""
     # Turn the whole web-search source on/off.
     SOURCING_WEB_SEARCH: bool = True
-    # Keep Adzuna as an ADDITIONAL source, or turn it off entirely. Off by
-    # default now that web search is the primary, web-wide discovery path.
-    SOURCING_USE_ADZUNA: bool = False
     # Free remote-job boards (RemoteOK, Remotive) as ADDITIONAL sources. They
     # need no API key. Results pass the same per-user role/country/dedupe gates,
     # so enabling them only widens coverage, it cannot pollute a user's list.

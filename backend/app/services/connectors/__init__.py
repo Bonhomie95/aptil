@@ -7,7 +7,6 @@ a connector by source name (the value stored on ``Job.source``).
 from __future__ import annotations
 
 from app.models.enums import JobSource
-from app.services.connectors.adzuna import AdzunaConnector
 from app.services.connectors.arbeitnow import ArbeitnowConnector
 from app.services.connectors.ashby import AshbyConnector
 from app.services.connectors.base import JobConnector
@@ -22,7 +21,6 @@ from app.services.connectors.weworkremotely import WeWorkRemotelyConnector
 from app.services.connectors.workday import WorkdayConnector
 
 CONNECTORS: dict[str, type[JobConnector]] = {
-    JobSource.ADZUNA.value: AdzunaConnector,
     JobSource.GREENHOUSE.value: GreenhouseConnector,
     JobSource.LEVER.value: LeverConnector,
     JobSource.ASHBY.value: AshbyConnector,
@@ -47,7 +45,6 @@ __all__ = [
     "CONNECTORS",
     "get_connector",
     "JobConnector",
-    "AdzunaConnector",
     "AshbyConnector",
     "GreenhouseConnector",
     "LeverConnector",

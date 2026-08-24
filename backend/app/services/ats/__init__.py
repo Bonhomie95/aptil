@@ -34,6 +34,15 @@ def supported_ats_types() -> list[str]:
     return sorted(_REGISTRY)
 
 
+def auto_appliable_ats_types() -> list[str]:
+    """ats_type values Aptil can submit end to end — for filtering the match
+    scan so its budget is spent on jobs that can actually become applications,
+    not diluted by company-hosted pages we would skip anyway."""
+    return sorted(
+        t for t, cls in _REGISTRY.items() if getattr(cls, "auto_submits", False)
+    )
+
+
 def can_auto_apply(ats_type: str | None) -> bool:
     """True when we can submit an application to this ATS end to end.
 
@@ -47,4 +56,10 @@ def can_auto_apply(ats_type: str | None) -> bool:
     return bool(cls and getattr(cls, "auto_submits", False))
 
 
-__all__ = ["AtsAdapter", "get_ats_adapter", "supported_ats_types", "can_auto_apply"]
+__all__ = [
+    "AtsAdapter",
+    "get_ats_adapter",
+    "supported_ats_types",
+    "can_auto_apply",
+    "auto_appliable_ats_types",
+]

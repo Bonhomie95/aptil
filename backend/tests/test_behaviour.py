@@ -155,7 +155,7 @@ async def test_upsert_job_persists_salary_and_posted_at():
 
     await init_db()
     posting = {
-        "source": "adzuna",
+        "source": "web_search",
         "apply_url": "https://example.com/job/1",
         "company": f"Acme-{uuid.uuid4().hex[:6]}",
         "title": "Data Engineer",

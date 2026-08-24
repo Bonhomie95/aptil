@@ -539,11 +539,17 @@ export const api = {
     const q = qs.toString();
     return request<Application[]>(`/jobs/applications${q ? `?${q}` : ""}`);
   },
-  availableJobs: (params?: { search?: string; remote?: boolean; limit?: number }) => {
+  availableJobs: (params?: {
+    search?: string;
+    remote?: boolean;
+    limit?: number;
+    offset?: number;
+  }) => {
     const qs = new URLSearchParams();
     if (params?.search) qs.set("search", params.search);
     if (params?.remote !== undefined) qs.set("remote", String(params.remote));
     if (params?.limit) qs.set("limit", String(params.limit));
+    if (params?.offset) qs.set("offset", String(params.offset));
     const q = qs.toString();
     return request<JobSummary[]>(`/jobs/available${q ? `?${q}` : ""}`);
   },
@@ -573,8 +579,10 @@ export const api = {
       "/jobs/match/status",
     ),
   // --- inbox (employer replies to the managed apply alias) ---
-  inbox: (limit = 20) =>
-    request<InboxItem[]>(`/inbound/inbox?limit=${limit}`),
+  inbox: (limit = 20, offset = 0) =>
+    request<InboxItem[]>(
+      `/inbound/inbox?limit=${limit}${offset ? `&offset=${offset}` : ""}`,
+    ),
   searchLocations: () =>
     request<{
       countries: { code: string; name: string }[];

@@ -71,7 +71,7 @@ def _queries_for_profile(profile) -> list[dict]:
     title — the point is that the query set is always derived from the person's
     own CV, never from a fixed board list someone chose for everyone.
     """
-    from app.services.connectors.adzuna import resolve_countries
+    from app.services.geo import resolve_countries
     from app.services.matching import target_titles
 
     titles = target_titles(profile)[:4]
@@ -93,15 +93,15 @@ def _queries_for_profile(profile) -> list[dict]:
     # meaningless across ten countries, and would drop everything.
     where = (profile.city or "").strip() if len(countries) == 1 else ""
 
-    from app.services.connectors.adzuna import ADZUNA_COUNTRIES
+    from app.services.geo import SEARCH_COUNTRIES
 
     out = []
     for country in countries:
         # `where` is a HUMAN location for web search ("Boston" or the country
-        # name); `country` is the ISO code Adzuna needs. When the user gave a
+        # name); `country` is the ISO code. When the user gave a
         # city (single-country case) we prefer it; otherwise fall back to the
         # country's display name so web search is still geo-targeted.
-        location = where or ADZUNA_COUNTRIES.get(country, "")
+        location = where or SEARCH_COUNTRIES.get(country, "")
         for title in titles:
             q: dict = {"what": title, "country": country, "results_per_page": 50}
             if location:
@@ -137,8 +137,7 @@ def source_for_user(user_id: str) -> dict:
     }
 
     # Which discovery sources are live. Web search is the primary, web-wide
-    # path — it finds postings anywhere, not on a fixed board list. Adzuna is
-    # optional and off by default now; both feed the same pool if enabled.
+    # path — it finds postings anywhere, not on a fixed board list.
     # Query-based sources take the user's role/location per call.
     query_sources: list[str] = []
     # Web search is ready when it's enabled AND either its provider is keyless
@@ -153,8 +152,6 @@ def source_for_user(user_id: str) -> dict:
     )
     if _web_search_ready:
         query_sources.append("web_search")
-    if settings.SOURCING_USE_ADZUNA:
-        query_sources.append("adzuna")
     if settings.SOURCING_REMOTE_BOARDS:
         # These accept a search term (the user's role).
         query_sources += ["remotive", "himalayas"]

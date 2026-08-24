@@ -44,7 +44,7 @@ def _nurse_profile() -> Profile:
     )
 
 
-def _job(company: str, title: str, description: str, source: str = "adzuna") -> Job:
+def _job(company: str, title: str, description: str, source: str = "web_search") -> Job:
     return Job(
         fingerprint=uuid.uuid4().hex, source=source, apply_url="https://x/y",
         company=company, title=title, description=description,

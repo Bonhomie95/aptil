@@ -214,7 +214,7 @@ async def _user_filters(user: User):
     which disables that filter.
     """
     from app.models.profile import Profile
-    from app.services.connectors.adzuna import resolve_countries
+    from app.services.geo import resolve_countries
     from app.services.matching import _company_key
 
     profile = await Profile.find_one(Profile.user_id == user.id)
@@ -707,10 +707,10 @@ async def set_automation(
 async def search_locations(user: User = Depends(get_current_user)):
     """Countries and continents the job search supports, for the picker UI.
 
-    Driven by what the Adzuna aggregator actually serves, so the UI can never
-    offer a location that returns nothing.
+    Driven by the curated search-country list, so the UI only offers
+    locations the search actually targets.
     """
-    from app.services.connectors.adzuna import ADZUNA_CONTINENTS, ADZUNA_COUNTRIES
+    from app.services.geo import CONTINENTS, SEARCH_COUNTRIES
 
     continent_labels = {
         "north_america": "North America",
@@ -723,11 +723,11 @@ async def search_locations(user: User = Depends(get_current_user)):
     return {
         "countries": [
             {"code": code, "name": name}
-            for code, name in sorted(ADZUNA_COUNTRIES.items(), key=lambda kv: kv[1])
+            for code, name in sorted(SEARCH_COUNTRIES.items(), key=lambda kv: kv[1])
         ],
         "continents": [
             {"code": code, "name": continent_labels.get(code, code),
              "countries": members}
-            for code, members in ADZUNA_CONTINENTS.items()
+            for code, members in CONTINENTS.items()
         ],
     }

@@ -145,7 +145,7 @@ async def upsert_job(posting: dict) -> tuple[Job | None, bool]:
 def ingest_postings(postings: list[dict]) -> dict:
     """Ingest a batch of already-fetched postings from a connector.
 
-    Connectors (Adzuna, Greenhouse, Lever, Ashby, USAJOBS, ...) live in
+    Connectors (web search, Greenhouse, Lever, Ashby, remote boards, ...) live in
     app/services/connectors/ and hand normalized postings to this task.
     """
     result = run_async(_ingest_async(postings or []))

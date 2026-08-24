@@ -55,7 +55,6 @@ class ApplicationStatus(StrEnum):
 
 
 class JobSource(StrEnum):
-    ADZUNA = "adzuna"
     WEB_SEARCH = "web_search"
     REMOTEOK = "remoteok"
     REMOTIVE = "remotive"
