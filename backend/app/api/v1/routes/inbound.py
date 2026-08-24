@@ -69,6 +69,7 @@ class InboxItem(BaseModel):
 @router.get("/inbox", response_model=list[InboxItem])
 async def inbox(
     limit: int = 20,
+    offset: int = 0,
     user: User = Depends(get_current_user),
 ):
     """Mail received on the user's apply alias, newest first.
@@ -78,9 +79,11 @@ async def inbox(
     arrive here because the accounts we created used the alias.
     """
     limit = max(1, min(limit, 50))
+    offset = max(0, min(offset, 10_000))
     rows = (
         await InboundEmail.find(InboundEmail.user_id == user.id)
         .sort("-created_at")
+        .skip(offset)
         .limit(limit)
         .to_list()
     )

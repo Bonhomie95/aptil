@@ -5,6 +5,7 @@ import { Mail } from "lucide-react";
 import { AppShell, PageHeader } from "@/components/app-shell";
 import { EmptyState, ErrorState, Skeleton } from "@/components/ui";
 import { useSession } from "@/hooks/use-session";
+import { Pagination } from "@/components/pagination";
 import { api, type InboxItem } from "@/lib/api";
 
 /**
@@ -63,13 +64,15 @@ export default function InboxPage() {
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<"all" | InboxItem["kind"]>("all");
   const [openId, setOpenId] = useState<string | null>(null);
+  const [page, setPage] = useState(0);
+  const [perPage, setPerPage] = useState(25);
 
   useEffect(() => {
     if (!user) return;
     let cancelled = false;
     (async () => {
       try {
-        const rows = await api.inbox(50);
+        const rows = await api.inbox(perPage, page * perPage);
         if (!cancelled) setItems(rows);
       } catch (err) {
         if (!cancelled)
@@ -81,7 +84,7 @@ export default function InboxPage() {
     return () => {
       cancelled = true;
     };
-  }, [user]);
+  }, [user, page, perPage]);
 
   const shown = useMemo(
     () => (items ?? []).filter((m) => filter === "all" || m.kind === filter),
@@ -202,6 +205,16 @@ export default function InboxPage() {
               Nothing in this category yet.
             </p>
           )}
+          <Pagination
+            page={page}
+            perPage={perPage}
+            count={items.length}
+            onPage={setPage}
+            onPerPage={(n) => {
+              setPerPage(n);
+              setPage(0);
+            }}
+          />
         </div>
       )}
     </AppShell>

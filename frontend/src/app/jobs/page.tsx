@@ -13,6 +13,7 @@ import {
 } from "@/components/ui";
 import { useSession } from "@/hooks/use-session";
 import { formatSalary, locationLine, relativeTime } from "@/lib/format";
+import { Pagination } from "@/components/pagination";
 import { api, type JobSummary } from "@/lib/api";
 
 const salaryLabel = (job: JobSummary) =>
@@ -30,6 +31,8 @@ export default function JobsPage() {
   const [remoteOnly, setRemoteOnly] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [page, setPage] = useState(0);
+  const [perPage, setPerPage] = useState(25);
 
   const load = useCallback(async () => {
     setBusy(true);
@@ -39,7 +42,8 @@ export default function JobsPage() {
         await api.availableJobs({
           search: applied || undefined,
           remote: remoteOnly ? true : undefined,
-          limit: 50,
+          limit: perPage,
+          offset: page * perPage,
         }),
       );
     } catch (err) {
@@ -47,7 +51,7 @@ export default function JobsPage() {
     } finally {
       setBusy(false);
     }
-  }, [applied, remoteOnly]);
+  }, [applied, remoteOnly, page, perPage]);
 
   // Runs on mount and whenever the remote filter flips. `applied` is the search
   // that produced what is on screen, NOT the text currently in the box: the
@@ -62,7 +66,8 @@ export default function JobsPage() {
         const results = await api.availableJobs({
           search: applied || undefined,
           remote: remoteOnly ? true : undefined,
-          limit: 50,
+          limit: perPage,
+          offset: page * perPage,
         });
         if (!cancelled) {
           setJobs(results);
@@ -77,7 +82,7 @@ export default function JobsPage() {
     return () => {
       cancelled = true;
     };
-  }, [user, remoteOnly, applied]);
+  }, [user, remoteOnly, applied, page, perPage]);
 
   if (sessionLoading) {
     return (
@@ -106,6 +111,7 @@ export default function JobsPage() {
         onSubmit={(e) => {
           e.preventDefault();
           setApplied(search.trim());
+          setPage(0);
         }}
         className="mt-8 flex flex-wrap items-center gap-3"
       >
@@ -129,7 +135,10 @@ export default function JobsPage() {
           <input
             type="checkbox"
             checked={remoteOnly}
-            onChange={(e) => setRemoteOnly(e.target.checked)}
+            onChange={(e) => {
+              setRemoteOnly(e.target.checked);
+              setPage(0);
+            }}
             className="h-4 w-4 rounded-sm border-border accent-[var(--color-accent)]"
           />
           Remote only
@@ -210,6 +219,19 @@ export default function JobsPage() {
               </li>
             ))}
           </ul>
+        )}
+        {jobs && jobs.length > 0 && (
+          <Pagination
+            page={page}
+            perPage={perPage}
+            count={jobs.length}
+            busy={busy}
+            onPage={setPage}
+            onPerPage={(n) => {
+              setPerPage(n);
+              setPage(0);
+            }}
+          />
         )}
       </div>
     </AppShell>
