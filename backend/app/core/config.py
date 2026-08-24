@@ -119,6 +119,10 @@ class Settings(BaseSettings):
     # Keep Adzuna as an ADDITIONAL source, or turn it off entirely. Off by
     # default now that web search is the primary, web-wide discovery path.
     SOURCING_USE_ADZUNA: bool = False
+    # Free remote-job boards (RemoteOK, Remotive) as ADDITIONAL sources. They
+    # need no API key. Results pass the same per-user role/country/dedupe gates,
+    # so enabling them only widens coverage, it cannot pollute a user's list.
+    SOURCING_REMOTE_BOARDS: bool = True
     USAJOBS_API_KEY: str = ""
     USAJOBS_USER_AGENT: str = ""  # a registered contact email, per USAJOBS API rules
 

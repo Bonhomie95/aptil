@@ -105,6 +105,64 @@ class JobConnector(ABC):
             )
             return None
 
+    def _fetch_json(
+        self,
+        url: str,
+        *,
+        params: dict | None = None,
+        headers: dict | None = None,
+        browser_fallback: bool = True,
+    ) -> Any:
+        """GET JSON, falling back to headless Chromium if the direct fetch is
+        blocked.
+
+        Many feeds serve plain JSON to httpx fine. Some sit behind a CDN that
+        rejects non-browser clients; for those, a real browser fetch succeeds
+        where httpx gets a 403/timeout. The fallback is best-effort and fully
+        guarded — if Playwright is unavailable or the environment cannot run a
+        sync browser, it simply returns None (that source yields nothing this
+        run) rather than raising.
+        """
+        data = self._json(self._get(url, params=params, headers=headers or {}))
+        if data is not None:
+            return data
+        if not browser_fallback:
+            return None
+        text = self._browser_fetch_text(url, params)
+        if not text:
+            return None
+        import json as _json_mod
+
+        try:
+            return _json_mod.loads(text)
+        except ValueError:
+            return None
+
+    def _browser_fetch_text(self, url: str, params: dict | None = None) -> str | None:
+        """Fetch a URL's body text via headless Chromium. Best-effort, never
+        raises. Runs only in a synchronous context (connector .fetch), never
+        inside the async apply engine."""
+        if params:
+            from urllib.parse import urlencode
+
+            sep = "&" if "?" in url else "?"
+            url = f"{url}{sep}{urlencode(params)}"
+        try:
+            from playwright.sync_api import sync_playwright
+
+            with sync_playwright() as pw:
+                browser = pw.chromium.launch(headless=True)
+                try:
+                    page = browser.new_page(user_agent=USER_AGENT)
+                    page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+                    return page.evaluate("() => document.body.innerText")
+                finally:
+                    browser.close()
+        except Exception as exc:  # noqa: BLE001 - fallback must never crash a run
+            log.warning("browser_fetch_failed", source=self.source,
+                        url=url, error=str(exc)[:200])
+            return None
+
     def _json(self, resp: httpx.Response | None) -> Any:
         """Parse JSON defensively; returns None when the body is not JSON."""
         if resp is None:

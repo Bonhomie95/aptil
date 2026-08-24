@@ -260,7 +260,7 @@ async def my_applications(
     # disappear on reload without a re-match, while never hiding an application
     # the user has already engaged with.
     from app.services.geo import location_allowed
-    from app.services.matching import _company_key
+    from app.services.matching import _company_key, _role_key
 
     countries, excluded = await _user_filters(user)
 
@@ -273,6 +273,24 @@ async def my_applications(
         if excluded and _company_key(job.company) in excluded:
             return False
         return location_allowed(getattr(job, "location", None), countries)
+
+    # Collapse cross-listing duplicates in the display: the same role at the same
+    # company (a different city, so a distinct row) shows once. Applied/engaged
+    # rows are never hidden — dedupe only among still-"matched" rows, keeping the
+    # first (already sorted best-score-first).
+    seen_roles: set[tuple[str, str]] = set()
+
+    def _not_duplicate(app_row) -> bool:
+        if app_row.status != ApplicationStatus.MATCHED.value:
+            return True
+        job = jobs_by_id.get(app_row.job_id)
+        if job is None:
+            return True
+        key = _role_key(job)
+        if key in seen_roles:
+            return False
+        seen_roles.add(key)
+        return True
 
     # A purged Job must not make the row vanish: the dashboard list would then
     # disagree with /stats, which counts every application.
@@ -291,7 +309,7 @@ async def my_applications(
             job=jobs_by_id.get(app.job_id),
         )
         for app in apps
-        if _keep(app)
+        if _keep(app) and _not_duplicate(app)
     ]
 
 

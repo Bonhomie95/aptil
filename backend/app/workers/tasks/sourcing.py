@@ -139,35 +139,55 @@ def source_for_user(user_id: str) -> dict:
     # Which discovery sources are live. Web search is the primary, web-wide
     # path — it finds postings anywhere, not on a fixed board list. Adzuna is
     # optional and off by default now; both feed the same pool if enabled.
-    sources: list[str] = []
+    # Query-based sources take the user's role/location per call.
+    query_sources: list[str] = []
     if settings.SOURCING_WEB_SEARCH and settings.WEB_SEARCH_API_KEY.strip():
-        sources.append("web_search")
+        query_sources.append("web_search")
     if settings.SOURCING_USE_ADZUNA:
-        sources.append("adzuna")
-    if not sources:
+        query_sources.append("adzuna")
+    if settings.SOURCING_REMOTE_BOARDS:
+        # These accept a search term (the user's role).
+        query_sources += ["remotive", "himalayas"]
+    # Feed sources return their whole listing regardless of query, fetched once;
+    # the per-user role/country/dedupe gates in matching filter them.
+    feed_sources: list[str] = (
+        ["remoteok", "arbeitnow", "weworkremotely"]
+        if settings.SOURCING_REMOTE_BOARDS
+        else []
+    )
+
+    if not query_sources and not feed_sources:
         log.warning("source_for_user_no_discovery_source", user_id=user_id)
+
+    cap = settings.MAX_POSTINGS_PER_SOURCE
+
+    def _ingest(postings: list[dict]) -> int:
+        if cap > 0:
+            postings = postings[:cap]
+        # Never ingest an excluded company's postings for this user.
+        if excluded:
+            postings = [
+                pp for pp in postings
+                if _company_key(pp.get("company")) not in excluded
+            ]
+        return run_async(_persist_async(postings))
 
     fetched = 0
     queries = _queries_for_profile(profile)
-    for source_name in sources:
+    for source_name in query_sources:
         connector = get_connector(source_name)
         if connector is None:
             continue
         for query in queries:
-            postings = connector.fetch(query)
-            cap = settings.MAX_POSTINGS_PER_SOURCE
-            if cap > 0:
-                postings = postings[:cap]
-            # Never ingest an excluded company's postings for this user.
-            if excluded:
-                postings = [
-                    pp for pp in postings
-                    if _company_key(pp.get("company")) not in excluded
-                ]
-            fetched += run_async(_persist_async(postings))
+            fetched += _ingest(connector.fetch(query))
+    for source_name in feed_sources:
+        connector = get_connector(source_name)
+        if connector is not None:
+            fetched += _ingest(connector.fetch({}))
 
     created = run_async(match_jobs_for_user(uid, limit=20))
-    log.info("source_for_user_done", user_id=user_id, sources=sources,
+    log.info("source_for_user_done", user_id=user_id,
+             sources=[*query_sources, *feed_sources],
              queries=len(queries), new_jobs=fetched, matched=created)
     return {"user_id": user_id, "fetched": fetched, "matched": created}
 

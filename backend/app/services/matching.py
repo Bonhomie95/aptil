@@ -166,6 +166,73 @@ _SENIORITY = {
     "head", "director", "vp", "chief", "i", "ii", "iii", "sr", "jr",
 }
 
+# Words that describe the KIND of job but not its DOMAIN. "Engineer" is shared by
+# almost every technical role, so crediting it made "Platform Engineer" look 50%
+# similar to "Machine Learning Infrastructure Engineer". These never count as a
+# role match on their own — only the domain words (platform, cloud, security,
+# reliability, data, …) do.
+_GENERIC_ROLE = {
+    "engineer", "engineering", "developer", "dev", "programmer", "manager",
+    "management", "specialist", "analyst", "consultant", "administrator",
+    "architect", "coordinator", "officer", "representative", "agent",
+    "technician", "professional", "expert", "practitioner", "member",
+    "worker", "personnel", "of", "and", "the", "for", "in", "a", "an",
+}
+_IGNORED_TOKENS = _SENIORITY | _GENERIC_ROLE
+
+# Common role acronyms expanded so a target of "SRE" still matches a posting for
+# "Site Reliability Engineer" (and vice versa).
+_ROLE_ACRONYMS = {
+    "sre": {"site", "reliability"},
+    "swe": {"software"},
+    "sde": {"software"},
+    "ml": {"machine", "learning"},
+    "ai": {"artificial", "intelligence"},
+    "qa": {"quality", "assurance"},
+    "ux": {"user", "experience"},
+    "ui": {"user", "interface"},
+    "pm": {"product"},
+    "devops": {"devops"},
+    "sysadmin": {"systems", "administrator"},
+}
+
+
+def _domain_tokens(title: str | None) -> set[str]:
+    """Meaningful (domain) tokens of a title: acronyms expanded, generic and
+    seniority words removed."""
+    toks = _tokens(title)
+    out: set[str] = set()
+    for t in toks:
+        out |= _ROLE_ACRONYMS.get(t, {t})
+    return out - _IGNORED_TOKENS
+
+
+def role_relevant(profile: Profile, job: Job | ScoredJob) -> bool:
+    """Whether a posting's title is actually one of the roles the user wants.
+
+    A HARD gate: with target titles set, a job whose title shares no domain word
+    with ANY target is dropped, no matter how well its skills or location score.
+    This is what stops an SRE seeker's dashboard filling with unrelated senior
+    engineering roles.
+    """
+    targets = target_titles(profile)
+    if not targets:
+        return True  # nothing stated -> don't gate
+    job_dom = _domain_tokens(job.title)
+    if not job_dom:
+        return True  # title is only generic words; don't over-filter
+    job_norm = _normalize(job.title)
+    for t in targets:
+        t_dom = _domain_tokens(t)
+        if t_dom and (t_dom & job_dom):
+            return True
+        # Whole-phrase containment catches "Cloud Engineer" inside
+        # "Cloud Engineer, Data Platform" even when tokenisation differs.
+        t_norm = _normalize(t)
+        if t_norm and t_norm in job_norm:
+            return True
+    return False
+
 
 def _title_similarity(profile: Profile, job: Job | ScoredJob) -> float:
     """Overlap between the user's most recent title and the posting's.
@@ -183,17 +250,16 @@ def _title_similarity(profile: Profile, job: Job | ScoredJob) -> float:
     # Score against every stated target and keep the best. A user looking for
     # either "SRE" or "Platform Engineer" should match a posting for either,
     # rather than being averaged into matching neither well.
+    b_dom = _domain_tokens(job.title)
     best = 0.0
     for candidate in target_titles(profile):
-        a = _tokens(candidate)
-        if not a:
-            continue
-        a_core, b_core = a - _SENIORITY, b - _SENIORITY
-        if a_core and b_core:
-            core = len(a_core & b_core) / min(len(a_core), len(b_core))
+        a_dom = _domain_tokens(candidate)
+        if a_dom and b_dom:
+            core = len(a_dom & b_dom) / min(len(a_dom), len(b_dom))
         else:
             core = 0.0
         # A shared seniority level is a weak positive, not a match in itself.
+        a, b = _tokens(candidate), _tokens(job.title)
         level = 1.0 if (a & _SENIORITY) & (b & _SENIORITY) else 0.0
         best = max(best, 0.85 * core + 0.15 * level)
     return round(min(1.0, best), 4)
@@ -400,6 +466,20 @@ async def match_jobs_for_user(
     excluded = _excluded_company_keys(profile)
     allowed_countries = _target_country_codes(profile)
 
+    # Roles the user already has an application for, so the SAME role in a
+    # different city (a distinct job_id, so existing_job_ids misses it) is not
+    # matched a second time. This is the cross-run half of dedupe; diversify()
+    # handles within-run.
+    existing_role_keys: set[tuple[str, str]] = set()
+    if existing_job_ids:
+        applied_jobs = (
+            await Job.find({"_id": {"$in": list(existing_job_ids)}})
+            .project(ScoredJob)
+            .to_list()
+        )
+        existing_role_keys = {_role_key(j) for j in applied_jobs}
+
+    seen_role_keys: set[tuple[str, str]] = set(existing_role_keys)
     scored: list[tuple[float, list[str], Job | ScoredJob]] = []
     for job in jobs:
         if job.id in existing_job_ids:
@@ -408,11 +488,20 @@ async def match_jobs_for_user(
         # matter how well it scores — this is a hard filter, not a penalty.
         if excluded and _company_key(job.company) in excluded:
             continue
-        # Same for location: if the user chose countries, a job that clearly
-        # sits in a different country is dropped, not merely down-ranked. This
-        # is why "I want USA" stops showing Singapore/Vietnam/India roles.
+        # Location gate: chose USA -> drop clearly non-US postings.
         if not location_allowed(job.location, allowed_countries):
             continue
+        # Role gate: the title must actually be one of the roles the user wants.
+        # Without this an SRE seeker's list fills with unrelated senior
+        # engineering roles that merely share the word "Engineer".
+        if not role_relevant(profile, job):
+            continue
+        # Cross-listing dedupe: same role+company already chosen (this run or a
+        # previous one) is not offered again in another city.
+        rk = _role_key(job)
+        if rk in seen_role_keys:
+            continue
+        seen_role_keys.add(rk)
         value, reasons = score_job(profile, job, with_reasons=True)  # type: ignore[misc]
         scored.append((value, reasons, job))
 
