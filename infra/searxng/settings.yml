@@ -3,7 +3,7 @@
 use_default_settings: true
 server:
   # Any non-empty value; SearXNG refuses to start without a secret.
-  secret_key: "change-me-searxng-secret"
+  secret_key: "a6954f7e4a63cc6cee89dad99a8b5311e4c85834ae0c7b06bd98879015631def"
   limiter: false
 search:
   formats:
