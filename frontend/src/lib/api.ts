@@ -325,6 +325,7 @@ export type Application = {
   status: string;
   match_score: number | null;
   match_reasons: string[];
+  cover_letter: string | null;
   error_message: string | null;
   submitted_at: string | null;
   created_at: string;
@@ -612,6 +613,16 @@ export const api = {
       countries: { code: string; name: string }[];
       continents: { code: string; name: string; countries: string[] }[];
     }>("/jobs/search-locations"),
+  editCoverLetter: (id: string, cover_letter: string) =>
+    request<{ cover_letter: string | null }>(
+      `/jobs/applications/${id}/cover-letter`,
+      { method: "PUT", body: JSON.stringify({ cover_letter }) },
+    ),
+  regenerateCoverLetter: (id: string) =>
+    request<{ cover_letter: string | null }>(
+      `/jobs/applications/${id}/cover-letter/regenerate`,
+      { method: "POST" },
+    ),
   applyBatch: (count: number) =>
     request<{ queued: number; detail: string | null }>(
       "/jobs/applications/apply-batch",

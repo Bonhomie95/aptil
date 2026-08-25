@@ -82,6 +82,8 @@ class ApplicationRead(BaseModel):
     submitted_fields: dict = {}
     needs_action: str | None = None
     credential_id: uuid.UUID | None = None
+    #: The tailored cover letter, if one has been generated for this job.
+    cover_letter: str | None = None
     # Null when the underlying posting was purged; the row still counts in stats.
     job: JobRead | None = None
     model_config = {"from_attributes": True}
@@ -322,6 +324,7 @@ async def my_applications(
             submitted_fields=app.submitted_fields,
             needs_action=app.needs_action,
             credential_id=app.credential_id,
+            cover_letter=app.cover_letter,
             job=jobs_by_id.get(app.job_id),
         )
         for app in apps
@@ -396,6 +399,7 @@ async def update_application_status(
         submitted_fields=app_row.submitted_fields,
         needs_action=app_row.needs_action,
         credential_id=app_row.credential_id,
+        cover_letter=app_row.cover_letter,
         job=JobRead.model_validate(job) if job else None,
     )
 
@@ -611,6 +615,91 @@ async def set_auto_apply(
     user.touch()
     await user.save()
     return {"enabled": user.auto_apply}
+
+
+class CoverLetterUpdate(BaseModel):
+    cover_letter: str = Field(max_length=8000)
+
+
+async def _owned_application(application_id: uuid.UUID, user: User) -> JobApplication:
+    app_row = await JobApplication.find_one(
+        JobApplication.id == application_id,
+        JobApplication.user_id == user.id,
+        JobApplication.tenant_id == user.tenant_id,
+    )
+    if app_row is None:
+        raise HTTPException(status_code=404, detail="Application not found")
+    return app_row
+
+
+@router.get("/applications/{application_id}/cover-letter")
+async def get_cover_letter(
+    application_id: uuid.UUID, user: User = Depends(get_current_user)
+):
+    app_row = await _owned_application(application_id, user)
+    return {"cover_letter": app_row.cover_letter}
+
+
+@router.put("/applications/{application_id}/cover-letter")
+async def edit_cover_letter(
+    application_id: uuid.UUID,
+    payload: CoverLetterUpdate,
+    user: User = Depends(get_current_user),
+):
+    """Let the user replace the generated cover letter with their own wording.
+
+    Only allowed while the application has not gone out yet — once submitted, the
+    letter that was sent is a record, not a draft.
+    """
+    app_row = await _owned_application(application_id, user)
+    if app_row.status in (
+        ApplicationStatus.SUBMITTED.value,
+        ApplicationStatus.CONFIRMED.value,
+        ApplicationStatus.INTERVIEW.value,
+        ApplicationStatus.OFFER.value,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This application has already been submitted.",
+        )
+    app_row.cover_letter = payload.cover_letter.strip()[:8000]
+    app_row.touch()
+    await app_row.save()
+    return {"cover_letter": app_row.cover_letter}
+
+
+@router.post(
+    "/applications/{application_id}/cover-letter/regenerate",
+    dependencies=[Depends(RateLimiter(times=20, seconds=3600, scope="user"))],
+)
+async def regenerate_cover_letter(
+    application_id: uuid.UUID, user: User = Depends(get_verified_user)
+):
+    """Generate a fresh cover letter for this job from the current profile."""
+    app_row = await _owned_application(application_id, user)
+    job = await Job.get(app_row.job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="The posting is no longer available.")
+
+    from app.ai import prompts
+    from app.models.profile import Profile
+    from app.workers.tasks.tailoring import _job_dict, _profile_dict
+
+    profile = await Profile.find_one(Profile.user_id == user.id)
+    if profile is None:
+        raise HTTPException(status_code=422, detail="Complete your profile first.")
+    try:
+        letter = prompts.generate_cover_letter(_profile_dict(profile), _job_dict(job))
+    except Exception as exc:  # noqa: BLE001 - AI provider hiccup
+        log.warning("cover_letter_regen_failed", error=str(exc)[:200])
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Couldn't generate a cover letter right now. Try again shortly.",
+        ) from exc
+    app_row.cover_letter = (letter or "").strip()[:8000] or None
+    app_row.touch()
+    await app_row.save()
+    return {"cover_letter": app_row.cover_letter}
 
 
 # --- Automation control ---------------------------------------------------

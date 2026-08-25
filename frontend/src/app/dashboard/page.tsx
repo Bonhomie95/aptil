@@ -686,6 +686,136 @@ function Quota({
  * the ticks show what Aptil already filled in, then one concrete next step —
  * and it uses the warn colour, never red. Nothing has failed.
  */
+/** View / edit / regenerate the cover letter for one application. Editing is
+ *  blocked once the application has been submitted (the letter that went out is
+ *  a record, not a draft) — the backend enforces this too. */
+function CoverLetterSection({ app: a }: { app: Application }) {
+  const [letter, setLetter] = useState<string | null>(a.cover_letter);
+  const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(a.cover_letter ?? "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const locked = ["submitted", "confirmed", "interview", "offer"].includes(a.status);
+
+  async function regenerate() {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await api.regenerateCoverLetter(a.id);
+      setLetter(res.cover_letter);
+      setDraft(res.cover_letter ?? "");
+      setOpen(true);
+      setEditing(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't generate it.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function save() {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await api.editCoverLetter(a.id, draft);
+      setLetter(res.cover_letter);
+      setEditing(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't save.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!letter) {
+    return (
+      <button
+        type="button"
+        onClick={regenerate}
+        disabled={busy}
+        className="mt-2 text-xs text-accent underline-offset-4 hover:underline disabled:opacity-50"
+      >
+        {busy ? "Generating cover letter…" : "Generate a cover letter"}
+      </button>
+    );
+  }
+
+  return (
+    <div className="mt-2">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="text-xs text-muted-foreground transition-colors hover:text-foreground"
+      >
+        {open ? "Hide cover letter" : "View cover letter"}
+      </button>
+      {open && (
+        <div className="mt-2 rounded-lg border border-border bg-card/60 p-3">
+          {editing ? (
+            <textarea
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              rows={10}
+              className="w-full rounded-md border border-border bg-card p-2 text-xs outline-none focus:border-accent"
+            />
+          ) : (
+            <p className="whitespace-pre-wrap text-xs text-muted-foreground">
+              {letter}
+            </p>
+          )}
+          <div className="mt-2 flex flex-wrap items-center gap-3 text-xs">
+            {locked ? (
+              <span className="text-subtle">Already submitted — read only.</span>
+            ) : editing ? (
+              <>
+                <button
+                  type="button"
+                  onClick={save}
+                  disabled={busy}
+                  className="text-accent underline-offset-4 hover:underline disabled:opacity-50"
+                >
+                  Save
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditing(false);
+                    setDraft(letter ?? "");
+                  }}
+                  className="text-muted-foreground underline-offset-4 hover:underline"
+                >
+                  Cancel
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setEditing(true)}
+                  className="text-accent underline-offset-4 hover:underline"
+                >
+                  Edit
+                </button>
+                <button
+                  type="button"
+                  onClick={regenerate}
+                  disabled={busy}
+                  className="text-muted-foreground underline-offset-4 hover:underline disabled:opacity-50"
+                >
+                  {busy ? "Regenerating…" : "Regenerate"}
+                </button>
+              </>
+            )}
+            {error && <span className="text-danger">{error}</span>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ApplicationRow({
   app: a,
   busy,
@@ -771,6 +901,8 @@ function ApplicationRow({
                 </ul>
               </details>
             )}
+
+            <CoverLetterSection app={a} />
           </div>
         </div>
 
