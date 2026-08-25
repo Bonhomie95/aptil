@@ -46,6 +46,11 @@ class AshbyAdapter(AtsAdapter):
         'button[type="submit"]:has-text("Submit")',
     ]
 
+    cover_letter_selectors = [
+        'textarea[aria-label*="cover letter" i]',
+        'textarea[name*="cover" i]',
+    ]
+
     async def apply(
         self, application: Any, job: Any, profile: Any, credential: Any
     ) -> dict[str, str]:

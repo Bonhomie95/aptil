@@ -340,9 +340,14 @@ async def dashboard_stats(user: User = Depends(get_current_user)):
     by_status = {row["_id"]: row["count"] for row in rows if row.get("_id")}
     sub = await billing.get_active_subscription(user.tenant_id)
 
+    # "Total" must match what the dashboard actually shows: only the pipeline
+    # the user can see (_VISIBLE_STATUSES), never the parked/failed rows that
+    # are hidden from the list. Otherwise Total says 6 while the list is empty.
+    total = sum(by_status.get(st, 0) for st in _VISIBLE_STATUSES)
+
     return {
         "by_status": by_status,
-        "total": sum(by_status.values()),
+        "total": total,
         "applications_used": sub.applications_used if sub else 0,
     }
 

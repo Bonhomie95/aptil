@@ -121,6 +121,17 @@ async def _tailor_async(application_id: str) -> dict:
     await document.insert()
 
     application.resume_document_id = document.id
+
+    # Cover letter, tailored to the same job. Best-effort: a résumé still
+    # applies even if the letter generation hiccups.
+    try:
+        letter = prompts.generate_cover_letter(_profile_dict(profile), _job_dict(job))
+        if (letter or "").strip():
+            application.cover_letter = letter.strip()[:6000]
+    except Exception as exc:  # noqa: BLE001 - never fail the tailoring over this
+        log.warning("cover_letter_failed", application_id=application_id,
+                    error=str(exc)[:200])
+
     application.touch()
     await application.save()
     log.info(

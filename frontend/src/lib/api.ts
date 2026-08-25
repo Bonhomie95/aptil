@@ -203,6 +203,7 @@ export type Me = {
   /** Background auto-apply on, vs review-then-batch-apply. */
   auto_apply?: boolean;
   auto_create_accounts?: boolean;
+  two_factor_enabled?: boolean;
 };
 
 export type Profile = {
@@ -408,14 +409,37 @@ export const api = {
     ),
 
   login: async (body: { email: string; password: string }) => {
-    const tokens = await request<Tokens>("/auth/login", {
+    const res = await request<Tokens | { two_factor_required: true; challenge: string }>(
+      "/auth/login",
+      { method: "POST", body: JSON.stringify(body), skipAuthRetry: true },
+    );
+    if ("two_factor_required" in res) return res; // caller prompts for the code
+    tokenStore.set(res);
+    return res;
+  },
+  verifyTwoFactor: async (challenge: string, code: string) => {
+    const tokens = await request<Tokens>("/auth/2fa/verify", {
       method: "POST",
-      body: JSON.stringify(body),
+      body: JSON.stringify({ challenge, code }),
       skipAuthRetry: true,
     });
     tokenStore.set(tokens);
     return tokens;
   },
+  twoFactorSetup: () =>
+    request<{ secret: string; otpauth_uri: string }>("/auth/2fa/setup", {
+      method: "POST",
+    }),
+  twoFactorEnable: (code: string) =>
+    request<{ enabled: boolean; backup_codes: string[] }>("/auth/2fa/enable", {
+      method: "POST",
+      body: JSON.stringify({ code }),
+    }),
+  twoFactorDisable: (code: string) =>
+    request<{ enabled: boolean }>("/auth/2fa/disable", {
+      method: "POST",
+      body: JSON.stringify({ code }),
+    }),
 
   forgotPassword: (email: string) =>
     request<{ sent: boolean }>("/auth/forgot-password", {

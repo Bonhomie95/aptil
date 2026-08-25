@@ -49,6 +49,12 @@ class LeverAdapter(AtsAdapter):
         'form:has(input[name="email"]) input[type="submit"]',
     ]
 
+    cover_letter_selectors = [
+        'textarea[name="comments"]',
+        'textarea[aria-label*="cover" i]',
+        'textarea[name*="cover" i]',
+    ]
+
     async def apply(
         self, application: Any, job: Any, profile: Any, credential: Any
     ) -> dict[str, str]:

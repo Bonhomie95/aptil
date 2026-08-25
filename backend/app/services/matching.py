@@ -29,6 +29,7 @@ from app.models.job import Job, JobApplication
 from app.models.profile import Profile
 from app.services.ats import can_auto_apply
 from app.services.geo import location_allowed
+from app.services.job_cache import is_unapplicable
 
 log = get_logger(__name__)
 
@@ -503,6 +504,11 @@ async def match_jobs_for_user(
         # hosted pages and park-only ATSes (Workday) are skipped entirely — the
         # user never sees a job that would just sit in a "you finish it" pile.
         if not can_auto_apply(getattr(job, "ats_type", None)):
+            continue
+        # Recently attempted and could not complete (CAPTCHA, login wall, …).
+        # Skip so we don't recreate an application that would just be discarded
+        # again. The marker expires, so it is retried later.
+        if is_unapplicable(str(user_id), str(job.id)):
             continue
         # Role gate: the title must actually be one of the roles the user wants.
         # Without this an SRE seeker's list fills with unrelated senior

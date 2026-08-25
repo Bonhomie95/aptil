@@ -29,6 +29,8 @@ function LoginInner() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [unverified, setUnverified] = useState(false);
+  const [challenge, setChallenge] = useState<string | null>(null);
+  const [code, setCode] = useState("");
   const [noticeDismissed, setNoticeDismissed] = useState(false);
 
   // Derived from the URL rather than copied into state by an effect.
@@ -45,7 +47,11 @@ function LoginInner() {
     setNoticeDismissed(true);
     setLoading(true);
     try {
-      await api.login({ email, password });
+      const res = await api.login({ email, password });
+      if (res && "two_factor_required" in res) {
+        setChallenge(res.challenge);
+        return;
+      }
       router.push("/dashboard");
     } catch (err) {
       // The backend uses this exact code so we can show the verify screen
@@ -55,6 +61,22 @@ function LoginInner() {
       } else {
         setError(err instanceof Error ? err.message : "Login failed");
       }
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function onVerify(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setLoading(true);
+    try {
+      await api.verifyTwoFactor(challenge!, code.trim());
+      router.push("/dashboard");
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "That code didn't work. Try again.",
+      );
     } finally {
       setLoading(false);
     }
@@ -74,6 +96,29 @@ function LoginInner() {
     return (
       <AuthShell title="Verify your email">
         <VerifyPending email={email} />
+      </AuthShell>
+    );
+  }
+
+  if (challenge) {
+    return (
+      <AuthShell
+        title="Two-step verification"
+        subtitle="Enter the 6-digit code from your authenticator app, or a backup code."
+      >
+        {error && <Notice className="mb-4">{error}</Notice>}
+        <form onSubmit={onVerify} className="space-y-4" noValidate>
+          <Field
+            label="Authentication code"
+            type="text"
+            autoComplete="one-time-code"
+            value={code}
+            onChange={setCode}
+          />
+          <Button type="submit" loading={loading} className="w-full">
+            Verify
+          </Button>
+        </form>
       </AuthShell>
     );
   }

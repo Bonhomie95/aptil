@@ -520,6 +520,9 @@ class AtsAdapter(ABC):
     #: Voluntary self-identification, keyed by Profile.demographics field name.
     demographic_selectors: dict[str, list[str]] = {}
 
+    #: Cover-letter textarea, filled from JobApplication.cover_letter when set.
+    cover_letter_selectors: list[str] = []
+
     #: Hostname suffixes this adapter's selectors are written for. Many
     #: employers configure their ATS to redirect to their own careers site
     #: (Stripe's Greenhouse board lands on stripe.com, which has no form on the
@@ -823,6 +826,13 @@ class AtsAdapter(ABC):
                     return _result(STATUS_NEEDS_INFO, "application_form_not_recognised")
 
                 filled = await self.fill_form(page, profile, resume_path)
+                # Cover letter: fill the textarea if the form has one and we
+                # generated a letter for this application.
+                letter = getattr(application, "cover_letter", None)
+                if letter and self.cover_letter_selectors:
+                    filled["cover_letter"] = await fill_first(
+                        page, self.cover_letter_selectors, letter
+                    )
                 if not filled.get("email"):
                     # The form has no field we recognise — submitting blind would
                     # produce an incomplete application.

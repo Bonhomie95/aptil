@@ -7,6 +7,15 @@ import uuid
 from pydantic import BaseModel, EmailStr, Field
 
 
+class TwoFactorCodeRequest(BaseModel):
+    code: str
+
+
+class TwoFactorVerifyRequest(BaseModel):
+    challenge: str
+    code: str
+
+
 class RegisterRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8, max_length=128)
@@ -79,6 +88,7 @@ class UserRead(BaseModel):
     # password instead of a current one it will never be given, and account
     # deletion already branches the same way.
     has_password: bool = True
+    two_factor_enabled: bool = False
     # Automation preferences, so Settings toggles reflect the real stored state
     # on load instead of guessing a default.
     auto_apply: bool = True

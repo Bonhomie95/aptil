@@ -83,6 +83,14 @@ def _build_beat_schedule() -> dict:
             if settings.APPLY_INTERVAL_MINUTES < 60
             else crontab(minute=30, hour=f"*/{settings.APPLY_INTERVAL_MINUTES // 60}"),
         }
+        # Continuously clear anything Aptil could not complete, so the dashboard
+        # only ever holds real applications.
+        schedule["purge-unapplicable"] = {
+            "task": "scheduler.purge_unapplicable",
+            "schedule": crontab(minute=f"*/{min(settings.APPLY_INTERVAL_MINUTES, 59)}")
+            if settings.APPLY_INTERVAL_MINUTES < 60
+            else crontab(minute=45, hour=f"*/{settings.APPLY_INTERVAL_MINUTES // 60}"),
+        }
     return schedule
 
 

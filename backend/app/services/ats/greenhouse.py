@@ -93,6 +93,13 @@ class GreenhouseAdapter(AtsAdapter):
         "disability_status": ["#disability_status", 'select[id*="disability" i]'],
     }
 
+    cover_letter_selectors = [
+        'textarea#cover_letter_text',
+        'textarea[name="cover_letter"]',
+        'textarea[aria-label*="cover letter" i]',
+        'textarea[id*="cover" i]',
+    ]
+
     async def apply(
         self, application: Any, job: Any, profile: Any, credential: Any
     ) -> dict[str, str]:

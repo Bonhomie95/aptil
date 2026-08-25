@@ -83,6 +83,31 @@ def _create_token(
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=ALGORITHM), jti
 
 
+def create_2fa_challenge(user_id: str) -> str:
+    """A short-lived token proving 'password step passed, 2FA pending'.
+
+    Deliberately NOT an access token: it carries a distinct type claim and a
+    tight expiry, so it can only be exchanged at the 2FA-verify endpoint and
+    never used as a bearer credential.
+    """
+    now = datetime.now(UTC)
+    payload = {
+        "sub": user_id,
+        "type": "2fa_challenge",
+        "iat": now,
+        "exp": now + timedelta(minutes=5),
+    }
+    return jwt.encode(payload, settings.SECRET_KEY, algorithm=ALGORITHM)
+
+
+def decode_2fa_challenge(token: str) -> str:
+    """Return the user id from a valid 2FA challenge token, else raise."""
+    claims = jwt.decode(token, settings.SECRET_KEY, algorithms=[ALGORITHM])
+    if claims.get("type") != "2fa_challenge":
+        raise ValueError("not a 2fa challenge token")
+    return str(claims["sub"])
+
+
 def create_access_token(
     subject: str, tenant_id: str | None = None, token_version: int = 0
 ) -> str:

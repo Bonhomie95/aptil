@@ -111,14 +111,16 @@ def submit_application(self, application_id: str) -> dict:
 
 
 async def _mark_failed(application_id: str, message: str) -> None:
+    """Terminal failure after retries: discard the application entirely — the
+    user never sees a job Aptil could not complete."""
+    from app.services.job_cache import mark_unapplicable
+
     app_row = await JobApplication.get(uuid.UUID(application_id))
     if app_row is None:
         return
-    app_row.status = ApplicationStatus.FAILED.value
-    app_row.error_message = message
-    _record_event(app_row, "failed", message)
-    app_row.touch()
-    await app_row.save()
+    mark_unapplicable(str(app_row.user_id), str(app_row.job_id))
+    await app_row.delete()
+    log.info("application_discarded", application_id=application_id, reason=message)
 
 
 async def _submit_async(application_id: str) -> dict:
@@ -134,29 +136,29 @@ async def _submit_async(application_id: str) -> dict:
 
     # Entitlement gate at the point of spend.
     if not await billing.can_apply(app_row.tenant_id):
-        app_row.status = ApplicationStatus.NEEDS_INFO.value
-        _record_event(app_row, "parked", "Monthly application quota reached")
-        app_row.error_message = "Monthly application quota reached"
+        # Not a failure — the match is fine, the quota is just spent. Leave it
+        # matched (pending) so it applies next period; never surface it as a
+        # "couldn't do".
+        app_row.status = ApplicationStatus.MATCHED.value
+        app_row.needs_action = None
         app_row.touch()
         await app_row.save()
-        return {"status": app_row.status, "detail": "quota_exhausted"}
+        return {"status": "quota_exhausted", "detail": "quota_exhausted"}
 
     job = await Job.get(app_row.job_id)
     _record_event(app_row, "apply_started", f"ats={job.ats_type if job else 'unknown'}")
 
     adapter = get_ats_adapter(job.ats_type if job else None)
-    if adapter is None:
-        # No adapter for this host. From web-search discovery this is the common,
-        # expected case: a posting on the employer's own careers site rather than
-        # a known ATS. It is not an error — the job was found and is tracked; the
-        # user finishes it where it lives. (We never pilot third-party sessions.)
-        app_row.status = ApplicationStatus.NEEDS_INFO.value
-        app_row.needs_action = "apply_on_employer_site"
-        app_row.error_message = None
-        _record_event(app_row, "parked", "employer_hosts_own_form")
-        app_row.touch()
-        await app_row.save()
-        return {"status": app_row.status}
+    if adapter is None or not getattr(adapter, "auto_submits", False):
+        # No adapter we can submit with (a company-hosted page slipped through).
+        # Discard silently — never a "couldn't do" record.
+        from app.services.job_cache import mark_unapplicable
+
+        mark_unapplicable(str(app_row.user_id), str(app_row.job_id))
+        await app_row.delete()
+        log.info("application_discarded", application_id=application_id,
+                 reason="no_auto_submit_adapter")
+        return {"status": "discarded"}
 
     profile = await Profile.find_one(Profile.user_id == app_row.user_id)
     credential = await _credential_for(app_row.user_id, job)
@@ -180,38 +182,46 @@ async def _submit_async(application_id: str) -> dict:
     if credential is not None:
         app_row.credential_id = credential.id
 
-    status_map = {
-        "submitted": ApplicationStatus.SUBMITTED.value,
-        "needs_info": ApplicationStatus.NEEDS_INFO.value,
-        "failed": ApplicationStatus.FAILED.value,
-    }
-    app_row.status = status_map.get(result["status"], ApplicationStatus.FAILED.value)
+    outcome = result["status"]
+    detail = result.get("detail", "")
+
+    # In-progress managed-account registration: KEEP it — the inbound-email
+    # pipeline will verify and re-queue it. This is the one needs_info we do not
+    # treat as a failure.
+    if outcome == "needs_info" and detail == "verification_pending":
+        app_row.status = ApplicationStatus.NEEDS_INFO.value
+        app_row.needs_action = "awaiting_email_verification"
+        _record_event(app_row, outcome, detail)
+        app_row.touch()
+        await app_row.save()
+        return {"status": app_row.status, "detail": detail}
+
+    # Anything Aptil could NOT complete (parked or failed) is DELETED, not kept:
+    # the user only ever sees jobs it applied to, never a pile of "couldn't do".
+    # A short-lived skip marker stops matching from recreating it in a loop; the
+    # marker expires so a transient block (a one-off CAPTCHA) is retried later.
+    if outcome != "submitted":
+        from app.services.job_cache import mark_unapplicable
+
+        mark_unapplicable(str(app_row.user_id), str(app_row.job_id))
+        await app_row.delete()
+        log.info("application_discarded", application_id=application_id,
+                 reason=detail or outcome)
+        return {"status": "discarded", "detail": detail}
+
+    # Success.
+    app_row.status = ApplicationStatus.SUBMITTED.value
     app_row.error_message = None
-    if app_row.status == ApplicationStatus.SUBMITTED.value:
-        app_row.submitted_at = datetime.now(UTC)
-    if app_row.status in (
-        ApplicationStatus.FAILED.value,
-        ApplicationStatus.NEEDS_INFO.value,
-    ):
-        app_row.error_message = result.get("detail")
-    # A machine-readable reason lets the dashboard offer the right next step
-    # instead of a generic "needs your attention".
-    app_row.needs_action = (
-        _ACTION_FOR.get(result.get("detail", ""), "review")
-        if app_row.status == ApplicationStatus.NEEDS_INFO.value
-        else None
-    )
-    _record_event(app_row, result["status"], result.get("detail", ""))
+    app_row.needs_action = None
+    app_row.submitted_at = datetime.now(UTC)
+    _record_event(app_row, outcome, detail)
     app_row.touch()
     await app_row.save()
 
-    if app_row.status == ApplicationStatus.SUBMITTED.value:
-        # Only a real submission consumes entitlement.
-        await billing.increment_application_usage(app_row.tenant_id)
-        await _notify_submitted(app_row, job)
-
+    await billing.increment_application_usage(app_row.tenant_id)
+    await _notify_submitted(app_row, job)
     log.info("application_processed", application_id=application_id, status=app_row.status)
-    return {"status": app_row.status, "detail": result.get("detail")}
+    return {"status": app_row.status, "detail": detail}
 
 
 async def _credential_for(user_id: uuid.UUID, job: Job | None) -> SiteCredential | None:

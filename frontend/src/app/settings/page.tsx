@@ -13,6 +13,7 @@ import {
   Lock,
   ClipboardList,
   Plus,
+  ShieldCheck,
   Send,
   Wand2,
   Target,
@@ -112,6 +113,7 @@ export default function SettingsPage() {
             hasPassword={user?.has_password ?? true}
             onDone={setNotice}
           />
+          <TwoFactorCard onNotice={setNotice} />
           <SearchPreferencesCard onNotice={setNotice} />
           <ApplyModeCard onNotice={setNotice} />
           <DisclosuresCard onNotice={setNotice} />
@@ -852,6 +854,149 @@ function ApplyModeCard({ onNotice }: { onNotice: (s: string) => void }) {
             : "Off — I'll review and apply from the dashboard"}
         </span>
       </label>
+    </Panel>
+  );
+}
+
+/** Two-factor authentication (TOTP): enrol with an authenticator app, or turn
+ *  it off. The secret is shown once for manual entry; scanning is via the
+ *  otpauth URI. Backup codes are displayed once on enable. */
+function TwoFactorCard({ onNotice }: { onNotice: (s: string) => void }) {
+  const { user } = useSession();
+  const enabled = Boolean(
+    user && "two_factor_enabled" in user &&
+      (user as { two_factor_enabled?: boolean }).two_factor_enabled,
+  );
+  const [override, setOverride] = useState<boolean | null>(null);
+  const on = override ?? enabled;
+
+  const [secret, setSecret] = useState<string | null>(null);
+  const [otpauth, setOtpauth] = useState<string | null>(null);
+  const [code, setCode] = useState("");
+  const [backup, setBackup] = useState<string[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function startSetup() {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await api.twoFactorSetup();
+      setSecret(res.secret);
+      setOtpauth(res.otpauth_uri);
+    } catch {
+      setError("Couldn't start setup.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function confirmEnable() {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await api.twoFactorEnable(code.trim());
+      setBackup(res.backup_codes);
+      setOverride(true);
+      setSecret(null);
+      setOtpauth(null);
+      setCode("");
+      onNotice("Two-factor authentication is on.");
+    } catch {
+      setError("That code didn't verify. Check your app's time and try again.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function disable() {
+    const entered = prompt("Enter a current code (or backup code) to turn 2FA off");
+    if (!entered) return;
+    setBusy(true);
+    try {
+      await api.twoFactorDisable(entered.trim());
+      setOverride(false);
+      setBackup(null);
+      onNotice("Two-factor authentication is off.");
+    } catch {
+      onNotice("Couldn't turn 2FA off — was the code correct?");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Panel
+      title="Two-factor authentication"
+      description="Protect your account with a time-based code from an authenticator app (Google Authenticator, Authy, 1Password)."
+      icon={<ShieldCheck className="h-4 w-4 text-subtle" aria-hidden />}
+    >
+      {backup ? (
+        <div className="space-y-3">
+          <p className="text-sm font-medium text-foreground">
+            Save these backup codes somewhere safe — each works once if you lose
+            your device. They won&apos;t be shown again.
+          </p>
+          <ul className="grid grid-cols-2 gap-2 rounded-lg border border-border bg-muted/40 p-3 font-mono text-sm">
+            {backup.map((c) => (
+              <li key={c}>{c}</li>
+            ))}
+          </ul>
+          <Button variant="secondary" onClick={() => setBackup(null)}>
+            Done
+          </Button>
+        </div>
+      ) : on ? (
+        <div className="space-y-3">
+          <p className="flex items-center gap-2 text-sm">
+            <span className="h-2 w-2 rounded-full bg-emerald-500" aria-hidden />
+            Two-factor is on.
+          </p>
+          <Button variant="danger" onClick={disable} loading={busy}>
+            Turn off
+          </Button>
+        </div>
+      ) : secret ? (
+        <div className="space-y-3">
+          <p className="text-sm text-muted-foreground">
+            In your authenticator app, add an account and scan the QR from this
+            link, or enter the key manually:
+          </p>
+          <p className="break-all rounded-lg border border-border bg-muted/40 p-2 font-mono text-xs">
+            {secret}
+          </p>
+          <a
+            href={otpauth ?? "#"}
+            className="text-sm text-accent underline-offset-4 hover:underline"
+          >
+            Open in authenticator app
+          </a>
+          <div>
+            <label htmlFor="totp-code" className="mb-1.5 block text-sm font-medium">
+              Enter the 6-digit code to confirm
+            </label>
+            <input
+              id="totp-code"
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              className="h-11 w-full rounded-lg border border-border bg-card px-4 outline-none focus:border-accent"
+            />
+          </div>
+          <Button onClick={confirmEnable} loading={busy}>
+            Verify & turn on
+          </Button>
+          <FieldError>{error}</FieldError>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <Button onClick={startSetup} loading={busy}>
+            Set up two-factor
+          </Button>
+          <FieldError>{error}</FieldError>
+        </div>
+      )}
     </Panel>
   );
 }

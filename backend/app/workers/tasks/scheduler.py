@@ -103,6 +103,40 @@ async def _match_all() -> dict:
     return {"dispatched": len(users)}
 
 
+@celery.task(name="scheduler.purge_unapplicable")
+def purge_unapplicable() -> dict:
+    """Delete any application Aptil could not complete.
+
+    Going forward the apply engine discards these on the spot; this sweep clears
+    legacy rows (e.g. parked before this behaviour existed) and anything that
+    slipped through, so the dashboard only ever holds real applications.
+    KEEPS in-progress managed-account verifications.
+    """
+    return run_async(_purge_unapplicable())
+
+
+async def _purge_unapplicable() -> dict:
+    from app.models.enums import ApplicationStatus
+    from app.models.job import JobApplication
+
+    result = await JobApplication.find(
+        {
+            "$or": [
+                {
+                    "status": ApplicationStatus.NEEDS_INFO.value,
+                    "needs_action": {"$ne": "awaiting_email_verification"},
+                },
+                {"status": ApplicationStatus.FAILED.value},
+                {"status": ApplicationStatus.DISCOVERED.value},
+            ]
+        }
+    ).delete()
+    deleted = getattr(result, "deleted_count", 0)
+    if deleted:
+        log.info("purged_unapplicable", count=deleted)
+    return {"deleted": deleted}
+
+
 @celery.task(name="scheduler.enqueue_all_users")
 def enqueue_all_users() -> dict:
     return run_async(_enqueue_all())

@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
+from pydantic import Field
 from pymongo import ASCENDING, IndexModel
 
 from app.db.base import TimestampedDocument
@@ -52,6 +53,15 @@ class User(TimestampedDocument):
     # (password reset, "sign out everywhere", account disable). Mirrored into
     # the JWT `ver` claim and checked on every authenticated request.
     token_version: int = 0
+
+    # --- Two-factor auth (TOTP) ---
+    # Encrypted TOTP secret (envelope-encrypted like site credentials). Present
+    # once setup starts; two_factor_enabled flips true only after a code is
+    # verified, so a half-finished setup never locks anyone out.
+    totp_secret_enc: str | None = None
+    two_factor_enabled: bool = False
+    # Argon2 hashes of one-time backup codes (single use; removed as consumed).
+    backup_codes: list[str] = Field(default_factory=list)
 
     # Email-verification resend throttling. Cooldown doubles each resend:
     # 30s, 60s, 120s, ... capped at MAX_COOLDOWN_SECONDS.

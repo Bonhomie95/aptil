@@ -89,6 +89,36 @@ def tailor_resume(profile: dict[str, Any], job: dict[str, Any]) -> str:
     )
 
 
+def generate_cover_letter(profile: dict[str, Any], job: dict[str, Any]) -> str:
+    """A concise, grounded cover letter (plain text) for a specific job.
+
+    Grounded in the user's real history; instructed not to fabricate. Kept short
+    (3-4 short paragraphs) because ATS cover-letter boxes and reviewers both
+    prefer brevity.
+    """
+    system = (
+        "You are an expert cover-letter writer. Write a concise, specific cover "
+        "letter (3-4 short paragraphs, under 300 words) for the candidate and the "
+        "target job. Open with genuine interest in THIS role/company, connect the "
+        "candidate's REAL experience to the job's needs, and close with a clear "
+        "call to action. Warm but professional; no clichés, no filler. DO NOT "
+        "invent employers, titles, dates, or achievements the candidate does not "
+        f"have. {_UNTRUSTED_NOTICE} Output the letter body as plain text only "
+        "(no markdown, no placeholders like [Company])."
+    )
+    user = (
+        f"CANDIDATE PROFILE (JSON):\n{_profile_json(profile)}\n\n"
+        f"TARGET JOB TITLE: {str(job.get('title') or '')[:200]}\n"
+        f"TARGET COMPANY: {str(job.get('company') or '')[:200]}\n\n"
+        + _fence("JOB DESCRIPTION", job.get("description", ""), MAX_JD_CHARS)
+    )
+    return router.chat(
+        [{"role": "system", "content": system}, {"role": "user", "content": user}],
+        temperature=0.5,
+        max_tokens=800,
+    )
+
+
 INTERVIEW_SYSTEM = (
     "You are an expert interviewer. Generate realistic interview questions tailored to "
     "the candidate's background AND the specific target job. Vary question type "

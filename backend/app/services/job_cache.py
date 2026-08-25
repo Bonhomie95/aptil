@@ -64,3 +64,33 @@ def mark_fetched(source: str, query: dict) -> None:
         )
     except Exception as exc:  # noqa: BLE001 - fail open
         log.warning("job_cache_mark_failed", error=str(exc)[:200])
+
+
+# --- "couldn't apply" skip markers ------------------------------------------
+#
+# When the apply engine cannot complete a job, we DELETE the application (the
+# user never sees anything Aptil could not do) and drop a short-lived marker so
+# matching does not immediately recreate it and retry in a tight loop. The
+# marker expires, so a transient failure (a CAPTCHA that was there once) is
+# retried later rather than banned forever.
+
+_SKIP_TTL_SECONDS = 3 * 24 * 3600  # 3 days
+
+
+def _skip_key(user_id: str, job_id: str) -> str:
+    return f"applyskip:{user_id}:{job_id}"
+
+
+def mark_unapplicable(user_id: str, job_id: str) -> None:
+    try:
+        _redis().set(_skip_key(user_id, job_id), "1", ex=_SKIP_TTL_SECONDS)
+    except Exception as exc:  # noqa: BLE001 - fail open
+        log.warning("apply_skip_mark_failed", error=str(exc)[:200])
+
+
+def is_unapplicable(user_id: str, job_id: str) -> bool:
+    try:
+        return bool(_redis().exists(_skip_key(user_id, job_id)))
+    except Exception as exc:  # noqa: BLE001 - fail open (retry rather than hide)
+        log.warning("apply_skip_check_failed", error=str(exc)[:200])
+        return False

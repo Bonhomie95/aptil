@@ -71,6 +71,10 @@ class JobApplication(TenantDocument):
     user_id: uuid.UUID
     job_id: uuid.UUID
     resume_document_id: uuid.UUID | None = None
+    # Cover letter tailored to this job, generated alongside the tailored résumé.
+    # Plain text; the apply engine fills it into a cover-letter field when the
+    # form has one.
+    cover_letter: str | None = None
 
     status: str = "discovered"
     match_score: float | None = None

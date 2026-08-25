@@ -21,6 +21,8 @@ from app.schemas.auth import (
     ResendVerificationResponse,
     ResetPasswordRequest,
     TokenResponse,
+    TwoFactorCodeRequest,
+    TwoFactorVerifyRequest,
     UserRead,
     VerifyEmailRequest,
 )
@@ -63,11 +65,16 @@ async def resend_verification(payload: ResendVerificationRequest):
 
 @router.post(
     "/login",
-    response_model=TokenResponse,
+    # No response_model: login returns EITHER a token pair OR a 2FA challenge.
     dependencies=[Depends(RateLimiter(times=5, seconds=60))],
 )
 async def login(payload: LoginRequest):
     user = await auth_service.authenticate(payload.email, payload.password)
+    if user.two_factor_enabled:
+        from app.core.security import create_2fa_challenge
+
+        # Password step passed; withhold tokens until the second factor.
+        return {"two_factor_required": True, "challenge": create_2fa_challenge(str(user.id))}
     return await auth_service.issue_tokens(user)
 
 
@@ -155,6 +162,73 @@ async def change_password(
     await auth_service.revoke_all_sessions(user.id)
     log.info("password_changed", user_id=str(user.id))
     # The bump above invalidated the caller's own token; hand back a fresh pair.
+    return await auth_service.issue_tokens(user)
+
+
+@router.post("/2fa/setup", dependencies=[Depends(RateLimiter(times=10, seconds=300))])
+async def two_factor_setup(user: User = Depends(get_current_user)):
+    """Begin TOTP enrolment: returns the secret + otpauth URI to show as a QR.
+    Not active until /2fa/enable verifies a code."""
+    from app.services import twofa
+
+    secret, uri = await twofa.begin_setup(user)
+    return {"secret": secret, "otpauth_uri": uri}
+
+
+@router.post("/2fa/enable", dependencies=[Depends(RateLimiter(times=10, seconds=300))])
+async def two_factor_enable(
+    payload: TwoFactorCodeRequest, user: User = Depends(get_current_user)
+):
+    """Verify the first code and switch 2FA on. Returns one-time backup codes."""
+    from app.services import twofa
+
+    try:
+        backup_codes = await twofa.enable(user, payload.code)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+    return {"enabled": True, "backup_codes": backup_codes}
+
+
+@router.post("/2fa/disable", dependencies=[Depends(RateLimiter(times=10, seconds=300))])
+async def two_factor_disable(
+    payload: TwoFactorCodeRequest, user: User = Depends(get_current_user)
+):
+    """Turn 2FA off. Requires a current code (or backup code) as proof."""
+    from app.services import twofa
+
+    if not await twofa.verify_login(user, payload.code):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_code"
+        )
+    await twofa.disable(user)
+    return {"enabled": False}
+
+
+@router.post(
+    "/2fa/verify",
+    response_model=TokenResponse,
+    dependencies=[Depends(RateLimiter(times=10, seconds=300))],
+)
+async def two_factor_verify(payload: TwoFactorVerifyRequest):
+    """Complete a login: exchange the challenge + a code for tokens."""
+    from app.core.security import decode_2fa_challenge
+    from app.services import twofa
+
+    try:
+        user_id = decode_2fa_challenge(payload.challenge)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="challenge_invalid"
+        ) from exc
+    import uuid as _uuid
+
+    user = await User.get(_uuid.UUID(user_id))
+    if user is None or not user.two_factor_enabled:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="challenge_invalid")
+    if not await twofa.verify_login(user, payload.code):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_code")
     return await auth_service.issue_tokens(user)
 
 
