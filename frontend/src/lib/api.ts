@@ -654,7 +654,13 @@ export const api = {
 
   // --- interviews ---
   listInterviews: () => request<InterviewSummary[]>("/interviews"),
-  createInterview: (body: { job_id?: string; question_count?: number }) =>
+  createInterview: (body: {
+    job_id?: string;
+    job_description?: string;
+    job_title?: string;
+    job_company?: string;
+    question_count?: number;
+  }) =>
     request<InterviewDetail>("/interviews", {
       method: "POST",
       body: JSON.stringify(body),

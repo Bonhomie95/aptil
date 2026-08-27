@@ -36,10 +36,13 @@ class User(TimestampedDocument):
     # Managed per-user address (u-<id>@APPLY_EMAIL_DOMAIN). Job-site accounts we
     # create use it, so registration needs no password or inbox access from the
     # user, and employer replies land where the dashboard can show them.
-    # Whether matched jobs are submitted automatically in the background (the
-    # "lazy" default), or wait for the user to apply them in batches from the
-    # dashboard. Discovery/matching run regardless — this only gates auto-apply.
-    auto_apply: bool = True
+    # Whether matched jobs are submitted automatically in the background, or
+    # wait for the user to apply them in batches from the dashboard. Defaults to
+    # OFF (review-first): unattended ATS apply frequently hits CAPTCHAs/login
+    # walls and gets discarded, which would leave the dashboard empty. With this
+    # off, matches persist as "pending" for the user to review and apply, and
+    # only a real submission (or a user-triggered apply) ever changes them.
+    auto_apply: bool = False
     apply_email_alias: str | None = None
     # Consent flag for creating job-site accounts on the user's behalf with the
     # managed alias. Defaulted from AUTO_CREATE_ACCOUNTS_DEFAULT at signup and

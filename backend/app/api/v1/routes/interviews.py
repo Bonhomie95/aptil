@@ -28,7 +28,13 @@ MAX_ANSWER_CHARS = 8000
 
 
 class CreateInterviewRequest(BaseModel):
+    # Tailor to a specific role. Provide EITHER a matched job_id, OR paste a job
+    # description (with optional title/company). Neither -> a general interview
+    # from the profile alone.
     job_id: uuid.UUID | None = None
+    job_description: str | None = Field(default=None, max_length=12000)
+    job_title: str | None = Field(default=None, max_length=200)
+    job_company: str | None = Field(default=None, max_length=200)
     # Bounded: each question costs an LLM call, so an unbounded count is a
     # direct route to unbounded spend.
     question_count: int = Field(default=8, ge=1, le=settings.MAX_INTERVIEW_QUESTIONS)
@@ -171,15 +177,24 @@ async def create_interview(
 
     profile = await Profile.find_one(Profile.user_id == user.id)
     job = None
+    job_dict = None
     if payload.job_id:
         job = await Job.get(payload.job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="Job not found")
-    job_dict = (
-        {"title": job.title, "company": job.company, "description": job.description}
-        if job
-        else None
-    )
+        job_dict = {
+            "title": job.title,
+            "company": job.company,
+            "description": job.description,
+        }
+    elif (payload.job_description or "").strip():
+        # A pasted description — the user preparing for a role Aptil didn't
+        # source. Title/company optional; the description carries the signal.
+        job_dict = {
+            "title": (payload.job_title or "").strip() or "the role",
+            "company": (payload.job_company or "").strip() or "the company",
+            "description": payload.job_description.strip(),
+        }
 
     # litellm is synchronous; running it inline would block the event loop for
     # the entire API worker while the model responds.
@@ -213,7 +228,12 @@ async def create_interview(
         tenant_id=user.tenant_id,
         job_id=payload.job_id,
         status=InterviewStatus.CREATED.value,
-        role_context=job.title if job else (profile.headline if profile else None),
+        role_context=(
+            job.title
+            if job
+            else (payload.job_title or "").strip()
+            or (profile.headline if profile else None)
+        ),
         questions=questions,
     )
     await session.insert()

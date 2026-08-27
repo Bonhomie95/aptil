@@ -71,21 +71,50 @@ def tailor_resume(profile: dict[str, Any], job: dict[str, Any]) -> str:
     Grounded in the user's real history; instructed not to fabricate.
     """
     system = (
-        "You are an expert résumé writer. Rewrite the candidate's résumé to target the "
-        "given job. Emphasise relevant real experience and keywords from the job "
-        "description. DO NOT invent employers, titles, dates, or credentials the "
-        f"candidate does not have. {_UNTRUSTED_NOTICE} Output clean markdown only."
+        "You are a senior résumé writer and career coach who has placed candidates "
+        "at top companies. Produce a polished, ATS-optimised résumé for THIS candidate "
+        "targeting THIS job. Follow every rule:\n\n"
+        "STRUCTURE (in this order, using these markdown headings):\n"
+        "  # Full Name\n"
+        "  One contact line: email, phone, city/country, and any "
+        "LinkedIn/portfolio present in the profile.\n"
+        "  ## Professional Summary — 2-3 punchy sentences positioning the candidate "
+        "for this exact role, leading with years of relevant experience and their "
+        "strongest, most relevant qualifications.\n"
+        "  ## Core Skills — a compact, scannable list of the candidate's REAL skills, "
+        "ordered to surface the ones this job asks for first.\n"
+        "  ## Experience — reverse-chronological. For each role: '### Title, Company' on "
+        "one line and 'Location · Dates' beneath. Then 3-5 bullet points.\n"
+        "  ## Education, then ## Certifications — only if present in the profile.\n\n"
+        "BULLET RULES (this is what separates a strong résumé from a weak one):\n"
+        "  - Start every bullet with a strong past-tense action verb (Led, Built, Drove, "
+        "Reduced, Launched, Owned — never 'Responsible for').\n"
+        "  - Show IMPACT and RESULTS, quantified wherever the candidate's data allows "
+        "(%, $, time saved, scale, users). Do NOT invent numbers — only quantify what "
+        "the profile supports; otherwise describe the concrete outcome qualitatively.\n"
+        "  - Weave in the job's key terminology and required skills NATURALLY where they "
+        "genuinely match the candidate's experience (ATS keyword alignment).\n"
+        "  - One line per bullet, tight and specific. No filler, no clichés, no buzzword soup.\n\n"
+        "HARD CONSTRAINTS:\n"
+        "  - NEVER invent employers, titles, dates, degrees, certifications, metrics, or "
+        "skills the candidate does not have. Every claim must trace to the profile.\n"
+        "  - Reframe and emphasise real experience for relevance — do not fabricate it.\n"
+        "  - Professional, confident tone. Concise enough to read as one focused page.\n"
+        f"  - {_UNTRUSTED_NOTICE}\n"
+        "  - Output ONLY the résumé as clean markdown. No preamble, no commentary, no "
+        "code fences, no placeholders like [Company]."
     )
     user = (
-        f"CANDIDATE PROFILE (JSON):\n{_profile_json(profile)}\n\n"
+        f"CANDIDATE PROFILE (JSON — the ONLY source of facts):\n{_profile_json(profile)}\n\n"
         f"TARGET JOB TITLE: {str(job.get('title') or '')[:200]}\n"
         f"TARGET COMPANY: {str(job.get('company') or '')[:200]}\n\n"
-        + _fence("JOB DESCRIPTION", job.get("description", ""), MAX_JD_CHARS)
+        + _fence("TARGET JOB DESCRIPTION", job.get("description", ""), MAX_JD_CHARS)
+        + "\n\nWrite the tailored résumé now."
     )
     return router.chat(
         [{"role": "system", "content": system}, {"role": "user", "content": user}],
-        temperature=0.4,
-        max_tokens=2500,
+        temperature=0.35,
+        max_tokens=3000,
     )
 
 

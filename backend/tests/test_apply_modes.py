@@ -33,19 +33,20 @@ async def _matched(user: User, score: float, company: str = "Acme") -> JobApplic
     return row
 
 
-async def test_auto_apply_defaults_on_and_toggles(client):
+async def test_auto_apply_defaults_off_and_toggles(client):
     email = await _register(client)
     tokens = await _login(client, email)
-    # default is on (exposed via /me)
+    # default is OFF (review-first) so matches persist instead of being
+    # auto-applied and discarded.
     me = await client.get("/api/v1/auth/me", headers=_auth(tokens))
-    assert me.json().get("auto_apply") is True
+    assert me.json().get("auto_apply") is False
 
-    off = await client.post(
-        "/api/v1/jobs/auto-apply", json={"enabled": False}, headers=_auth(tokens)
+    on = await client.post(
+        "/api/v1/jobs/auto-apply", json={"enabled": True}, headers=_auth(tokens)
     )
-    assert off.status_code == 200 and off.json()["enabled"] is False
+    assert on.status_code == 200 and on.json()["enabled"] is True
     me2 = await client.get("/api/v1/auth/me", headers=_auth(tokens))
-    assert me2.json()["auto_apply"] is False
+    assert me2.json()["auto_apply"] is True
 
 
 async def test_batch_apply_queues_top_n_by_score(client):

@@ -91,7 +91,7 @@ class UserRead(BaseModel):
     two_factor_enabled: bool = False
     # Automation preferences, so Settings toggles reflect the real stored state
     # on load instead of guessing a default.
-    auto_apply: bool = True
+    auto_apply: bool = False
     auto_create_accounts: bool = True
 
     model_config = {"from_attributes": True}

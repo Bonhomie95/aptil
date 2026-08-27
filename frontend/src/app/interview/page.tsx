@@ -27,6 +27,7 @@ import { useSpeech } from "@/hooks/use-voice";
 import {
   ApiError,
   api,
+  type Application,
   type Feedback,
   type InterviewDetail,
   type InterviewSummary,
@@ -46,6 +47,12 @@ export default function InterviewPage() {
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [loading, setLoading] = useState(false);
   const [starting, setStarting] = useState(false);
+  const [prepMode, setPrepMode] = useState<"general" | "job" | "paste">("general");
+  const [jobId, setJobId] = useState("");
+  const [jdText, setJdText] = useState("");
+  const [jdTitle, setJdTitle] = useState("");
+  const [jdCompany, setJdCompany] = useState("");
+  const [apps, setApps] = useState<Application[]>([]);
   const [finishing, setFinishing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [quotaBlocked, setQuotaBlocked] = useState(false);
@@ -128,12 +135,29 @@ export default function InterviewPage() {
     }
   }
 
+  useEffect(() => {
+    (async () => {
+      try {
+        setApps(await api.applications());
+      } catch {
+        setApps([]);
+      }
+    })();
+  }, []);
+
   async function start() {
     setError(null);
     setQuotaBlocked(false);
     setStarting(true);
     try {
-      const detail = await api.createInterview({ question_count: 6 });
+      const body: Parameters<typeof api.createInterview>[0] = { question_count: 6 };
+      if (prepMode === "job" && jobId) body.job_id = jobId;
+      if (prepMode === "paste" && jdText.trim()) {
+        body.job_description = jdText.trim();
+        if (jdTitle.trim()) body.job_title = jdTitle.trim();
+        if (jdCompany.trim()) body.job_company = jdCompany.trim();
+      }
+      const detail = await api.createInterview(body);
       // The backend now guarantees a non-empty question list, but guard anyway
       // rather than rendering a dead-end screen.
       if (!detail.questions?.length) {
@@ -297,10 +321,100 @@ export default function InterviewPage() {
         )}
 
         {!session && !quotaBlocked && (
-          <div className="mt-10 flex justify-center">
-            <Button size="lg" onClick={start} loading={starting}>
-              {starting ? "Preparing questions…" : "Start a practice session"}
-            </Button>
+          <div className="mx-auto mt-10 max-w-xl space-y-5">
+            <div>
+              <p className="mb-2 text-sm font-medium">What are you preparing for?</p>
+              <div className="flex flex-wrap gap-2">
+                {[
+                  ["general", "General practice"],
+                  ["job", "A matched job"],
+                  ["paste", "Paste a job description"],
+                ].map(([key, lbl]) => (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setPrepMode(key as typeof prepMode)}
+                    aria-pressed={prepMode === key}
+                    className={`rounded-full border px-3 py-1.5 text-sm transition-colors ${
+                      prepMode === key
+                        ? "border-accent bg-accent/10 text-accent"
+                        : "border-border text-muted-foreground hover:border-accent/40"
+                    }`}
+                  >
+                    {lbl}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {prepMode === "job" && (
+              <div>
+                <label htmlFor="iv-job" className="mb-1.5 block text-sm font-medium">
+                  Which role?
+                </label>
+                <select
+                  id="iv-job"
+                  value={jobId}
+                  onChange={(e) => setJobId(e.target.value)}
+                  className="h-11 w-full rounded-lg border border-border bg-card px-4 outline-none focus:border-accent"
+                >
+                  <option value="">Choose from your matches…</option>
+                  {apps
+                    .filter((a) => a.job)
+                    .map((a) => (
+                      <option key={a.id} value={a.job!.id}>
+                        {a.job!.title} — {a.job!.company}
+                      </option>
+                    ))}
+                </select>
+                {apps.length === 0 && (
+                  <p className="mt-1.5 text-xs text-muted-foreground">
+                    No matched jobs yet — paste a description instead.
+                  </p>
+                )}
+              </div>
+            )}
+
+            {prepMode === "paste" && (
+              <div className="space-y-3">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <input
+                    value={jdTitle}
+                    onChange={(e) => setJdTitle(e.target.value)}
+                    placeholder="Job title (optional)"
+                    className="h-11 rounded-lg border border-border bg-card px-4 text-sm outline-none placeholder:text-subtle focus:border-accent"
+                  />
+                  <input
+                    value={jdCompany}
+                    onChange={(e) => setJdCompany(e.target.value)}
+                    placeholder="Company (optional)"
+                    className="h-11 rounded-lg border border-border bg-card px-4 text-sm outline-none placeholder:text-subtle focus:border-accent"
+                  />
+                </div>
+                <textarea
+                  value={jdText}
+                  onChange={(e) => setJdText(e.target.value)}
+                  rows={8}
+                  placeholder="Paste the job description here…"
+                  className="w-full rounded-lg border border-border bg-card p-3 text-sm outline-none placeholder:text-subtle focus:border-accent"
+                />
+              </div>
+            )}
+
+            <div className="flex justify-center pt-2">
+              <Button
+                size="lg"
+                onClick={start}
+                loading={starting}
+                disabled={
+                  starting ||
+                  (prepMode === "job" && !jobId) ||
+                  (prepMode === "paste" && !jdText.trim())
+                }
+              >
+                {starting ? "Preparing questions…" : "Start a practice session"}
+              </Button>
+            </div>
           </div>
         )}
 
