@@ -189,3 +189,23 @@ def chat_json(
     if not isinstance(parsed, dict):
         raise ValueError("Model returned JSON that is not an object")
     return parsed
+
+
+def transcribe(audio_path: str, model: str = "whisper-1") -> str:
+    """Speech-to-text for interview answers, via OpenAI Whisper.
+
+    Used as the cross-device fallback for spoken answers: the browser's own
+    SpeechRecognition is missing or unreliable on iOS/Safari, so the client
+    records audio and we transcribe it here. Returns "" if no key is available
+    rather than raising, so the caller can fall back to typing.
+    """
+    key = _pools.next_key("openai/" + model)
+    if not key:
+        log.warning("transcription_no_key")
+        return ""
+    with open(audio_path, "rb") as fh:
+        resp = litellm.transcription(model=model, file=fh, api_key=key)
+    text = getattr(resp, "text", None)
+    if text is None and isinstance(resp, dict):
+        text = resp.get("text")
+    return (text or "").strip()

@@ -6,10 +6,11 @@ import uuid
 from datetime import UTC, datetime
 
 from anyio import to_thread
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel, Field
 
 from app.ai import prompts
+from app.ai import router as ai_router
 from app.api.deps import get_verified_user
 from app.core.config import settings
 from app.core.logging import get_logger
@@ -377,3 +378,52 @@ async def delete_interview(
     session = await _owned_session(session_id, user)
     await session.delete()
     return None
+
+
+# Cap uploaded audio: a spoken answer is short. Bigger than this is either a
+# mistake or abuse; either way we refuse rather than pay to transcribe it.
+_MAX_AUDIO_BYTES = 8 * 1024 * 1024  # 8 MB
+
+
+@router.post(
+    "/transcribe",
+    dependencies=[Depends(RateLimiter(times=60, seconds=3600, scope="user"))],
+)
+async def transcribe_answer(
+    audio: UploadFile = File(...),
+    _user: User = Depends(get_verified_user),
+):
+    """Transcribe a spoken interview answer (server-side STT).
+
+    The cross-device path for voice answers: the browser records the audio and
+    posts it here, because on-device SpeechRecognition is unavailable/unreliable
+    on iOS and Safari. Returns {"text": ...}; empty text means transcription is
+    unavailable and the user should type.
+    """
+    import os
+    import tempfile
+
+    data = await audio.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="empty_audio")
+    if len(data) > _MAX_AUDIO_BYTES:
+        raise HTTPException(status_code=413, detail="audio_too_large")
+
+    suffix = os.path.splitext(audio.filename or "")[1] or ".webm"
+    fd, path = tempfile.mkstemp(suffix=suffix, prefix="aptil_answer_")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        text = await to_thread.run_sync(lambda: ai_router.transcribe(path))
+    except Exception as exc:  # noqa: BLE001 - surface a usable message
+        log.warning("transcription_failed", error=str(exc)[:200])
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Couldn't transcribe that. Please type your answer.",
+        ) from exc
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    return {"text": text}

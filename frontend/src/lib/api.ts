@@ -666,6 +666,14 @@ export const api = {
       body: JSON.stringify(body),
     }),
   getInterview: (id: string) => request<InterviewDetail>(`/interviews/${id}`),
+  transcribeAudio: async (blob: Blob) => {
+    const form = new FormData();
+    form.append("audio", blob, "answer.webm");
+    return request<{ text: string }>("/interviews/transcribe", {
+      method: "POST",
+      body: form,
+    });
+  },
   submitAnswer: (sessionId: string, question_index: number, answer: string) =>
     request<Feedback>(`/interviews/${sessionId}/answer`, {
       method: "POST",

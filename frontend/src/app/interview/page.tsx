@@ -53,6 +53,17 @@ export default function InterviewPage() {
   const [jdTitle, setJdTitle] = useState("");
   const [jdCompany, setJdCompany] = useState("");
   const [apps, setApps] = useState<Application[]>([]);
+  const [recording, setRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  // MediaRecorder works on iOS/Safari where SpeechRecognition does not, so it
+  // is the cross-device path for spoken answers (audio -> server transcription).
+  const canRecord =
+    typeof window !== "undefined" &&
+    typeof navigator !== "undefined" &&
+    !!navigator.mediaDevices?.getUserMedia &&
+    typeof window.MediaRecorder !== "undefined";
   const [finishing, setFinishing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [quotaBlocked, setQuotaBlocked] = useState(false);
@@ -144,6 +155,43 @@ export default function InterviewPage() {
       }
     })();
   }, []);
+
+  async function startRecording() {
+    setError(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mr = new MediaRecorder(stream);
+      chunksRef.current = [];
+      mr.ondataavailable = (e) => {
+        if (e.data.size) chunksRef.current.push(e.data);
+      };
+      mr.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        const blob = new Blob(chunksRef.current, { type: "audio/webm" });
+        setTranscribing(true);
+        try {
+          const { text } = await api.transcribeAudio(blob);
+          if (text) setAnswer((prev) => (prev ? prev + " " : "") + text);
+          else setError("Couldn't hear that clearly — try again or type.");
+        } catch {
+          setError("Couldn't transcribe that. Please type your answer.");
+        } finally {
+          setTranscribing(false);
+        }
+      };
+      mr.start();
+      recorderRef.current = mr;
+      setRecording(true);
+    } catch {
+      setError("Microphone access is needed to record your answer.");
+    }
+  }
+
+  function stopRecording() {
+    recorderRef.current?.stop();
+    recorderRef.current = null;
+    setRecording(false);
+  }
 
   async function start() {
     setError(null);
@@ -278,7 +326,8 @@ export default function InterviewPage() {
   const finished =
     session != null &&
     (session.status === "completed" || idx >= session.questions.length);
-  const voiceAvailable = speech.supported.speak || speech.supported.listen;
+  const voiceAvailable =
+    speech.supported.speak || speech.supported.listen || canRecord;
 
   return (
     <AppShell
@@ -450,33 +499,45 @@ export default function InterviewPage() {
                   <button
                     type="button"
                     aria-label={
-                      speech.listening ? "Stop recording" : "Answer by voice"
+                      speech.listening || recording
+                        ? "Stop recording"
+                        : "Answer by voice"
                     }
-                    aria-pressed={speech.listening}
-                    disabled={!speech.supported.listen || !!feedback}
+                    aria-pressed={speech.listening || recording}
+                    disabled={
+                      (!speech.supported.listen && !canRecord) ||
+                      transcribing ||
+                      !!feedback
+                    }
                     onClick={() => {
-                      if (speech.listening) {
-                        speech.stopListening();
-                        // Commit what was heard as the editable answer.
-                        if (speech.transcript) setAnswer(speech.transcript);
+                      if (speech.supported.listen) {
+                        // Native, on-device recognition (Chrome/Edge/desktop Safari).
+                        if (speech.listening) {
+                          speech.stopListening();
+                          if (speech.transcript) setAnswer(speech.transcript);
+                        } else {
+                          setAnswer("");
+                          speech.resetTranscript();
+                          speech.startListening();
+                        }
+                      } else if (recording) {
+                        stopRecording();
                       } else {
-                        setAnswer("");
-                        speech.resetTranscript();
-                        speech.startListening();
+                        startRecording();
                       }
                     }}
                     className={`relative grid h-16 w-16 place-items-center rounded-full border transition-colors duration-200 ease-ease disabled:cursor-not-allowed disabled:opacity-40 ${
-                      speech.listening
+                      speech.listening || recording
                         ? "border-accent bg-accent-soft text-accent"
                         : "border-border bg-tile text-foreground hover:border-foreground/40"
                     }`}
                   >
-                    {speech.listening ? (
+                    {speech.listening || recording ? (
                       <Square className="h-5 w-5" aria-hidden />
                     ) : (
                       <Mic className="h-6 w-6" aria-hidden />
                     )}
-                    {speech.listening && (
+                    {(speech.listening || recording) && (
                       <span
                         aria-hidden
                         className="absolute inset-0 rounded-full border border-accent opacity-20"
@@ -496,9 +557,19 @@ export default function InterviewPage() {
               </div>
             )}
 
-            {!speech.supported.listen && voiceAvailable && (
+            {!speech.supported.listen && !canRecord && voiceAvailable && (
               <p className="mt-3 text-center text-xs text-muted-foreground">
-                Voice answers need Chrome, Edge or Safari — you can still type.
+                Voice answers aren&apos;t available on this browser — you can type.
+              </p>
+            )}
+            {transcribing && (
+              <p role="status" className="mt-3 text-center text-xs text-accent">
+                Transcribing your answer…
+              </p>
+            )}
+            {recording && (
+              <p role="status" className="mt-3 text-center text-xs text-accent">
+                Recording… tap the mic again when you&apos;re done.
               </p>
             )}
             {speech.error && (
