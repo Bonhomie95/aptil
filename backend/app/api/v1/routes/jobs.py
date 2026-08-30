@@ -272,46 +272,11 @@ async def my_applications(
     )
     jobs_by_id = {job.id: job for job in jobs}
 
-    # Hide rows that no longer fit the user's current location/company choices —
-    # but ONLY while they are still just "matched" (not yet acted on). This makes
-    # stale cross-country matches (e.g. from before the user picked USA)
-    # disappear on reload without a re-match, while never hiding an application
-    # the user has already engaged with.
-    from app.services.geo import location_allowed
-    from app.services.matching import _company_key, _role_key
-
-    countries, excluded = await _user_filters(user)
-
-    def _keep(app_row) -> bool:
-        if app_row.status != ApplicationStatus.MATCHED.value:
-            return True
-        job = jobs_by_id.get(app_row.job_id)
-        if job is None:
-            return True
-        if excluded and _company_key(job.company) in excluded:
-            return False
-        return location_allowed(getattr(job, "location", None), countries)
-
-    # Collapse cross-listing duplicates in the display: the same role at the same
-    # company (a different city, so a distinct row) shows once. Applied/engaged
-    # rows are never hidden — dedupe only among still-"matched" rows, keeping the
-    # first (already sorted best-score-first).
-    seen_roles: set[tuple[str, str]] = set()
-
-    def _not_duplicate(app_row) -> bool:
-        if app_row.status != ApplicationStatus.MATCHED.value:
-            return True
-        job = jobs_by_id.get(app_row.job_id)
-        if job is None:
-            return True
-        key = _role_key(job)
-        if key in seen_roles:
-            return False
-        seen_roles.add(key)
-        return True
-
-    # A purged Job must not make the row vanish: the dashboard list would then
-    # disagree with /stats, which counts every application.
+    # A match stays on the dashboard until the user applies to it — a later
+    # change to target countries/excluded companies affects future matching
+    # (see services/matching.py), not one already found. A purged Job must not
+    # make the row vanish either: it would then disagree with /stats, which
+    # counts every application.
     return [
         ApplicationRead(
             id=app.id,
@@ -328,25 +293,32 @@ async def my_applications(
             job=jobs_by_id.get(app.job_id),
         )
         for app in apps
-        if _keep(app) and _not_duplicate(app)
     ]
 
 
 @router.get("/stats")
 async def dashboard_stats(user: User = Depends(get_current_user)):
-    """Counts per application status for the dashboard."""
+    """Counts per application status for the dashboard.
+
+    Must agree with what ``my_applications`` actually shows — same
+    ``_VISIBLE_STATUSES`` scope, no extra filtering — since neither endpoint
+    hides a "matched" row for anything short of the user applying to it.
+    """
     pipeline = [
-        {"$match": {"user_id": user.id, "tenant_id": user.tenant_id}},
+        {
+            "$match": {
+                "user_id": user.id,
+                "tenant_id": user.tenant_id,
+                "status": {"$in": _VISIBLE_STATUSES},
+            }
+        },
         {"$group": {"_id": "$status", "count": {"$sum": 1}}},
     ]
     rows = await JobApplication.aggregate(pipeline).to_list()
     by_status = {row["_id"]: row["count"] for row in rows if row.get("_id")}
-    sub = await billing.get_active_subscription(user.tenant_id)
+    total = sum(by_status.values())
 
-    # "Total" must match what the dashboard actually shows: only the pipeline
-    # the user can see (_VISIBLE_STATUSES), never the parked/failed rows that
-    # are hidden from the list. Otherwise Total says 6 while the list is empty.
-    total = sum(by_status.get(st, 0) for st in _VISIBLE_STATUSES)
+    sub = await billing.get_active_subscription(user.tenant_id)
 
     return {
         "by_status": by_status,
@@ -428,7 +400,12 @@ async def request_matching(user: User = Depends(get_verified_user)):
         )
 
     try:
-        async_result = source_for_user.delay(str(user.id))
+        # Dedicated queue: a click here must never wait behind the periodic
+        # bulk sweep's per-user backlog (hundreds of users x ~3-4 min each on
+        # the default queue) — see backend/scripts/start-worker.sh.
+        async_result = source_for_user.apply_async(
+            args=[str(user.id)], queue="interactive"
+        )
     except Exception as exc:  # noqa: BLE001 - broker down
         log.error("match_enqueue_failed", user_id=str(user.id), error=str(exc))
         raise HTTPException(
