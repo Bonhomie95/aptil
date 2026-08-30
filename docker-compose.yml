@@ -67,9 +67,11 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile.worker
-    # Two Celery consumers (critical email queue + default queue) — see
-    # backend/scripts/start-worker.sh. Keeps verification/reset emails off the
-    # same pool as multi-minute Playwright apply jobs.
+    # Three Celery consumers (critical email queue + interactive on-demand
+    # queue + default bulk-sweep queue) — see backend/scripts/start-worker.sh.
+    # Keeps verification/reset emails, and a user's own "Find new matches"
+    # click, off the same pool as multi-minute Playwright apply jobs and the
+    # periodic per-user sweep.
     command: bash scripts/start-worker.sh
     env_file: .env
     volumes:

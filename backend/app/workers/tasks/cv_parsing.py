@@ -191,7 +191,10 @@ async def _parse_async(resume_document_id: str) -> dict:
     try:
         from app.workers.tasks.sourcing import source_for_user
 
-        source_for_user.delay(str(doc.user_id))
+        # Dedicated queue: a fresh signup waiting on their first matches must
+        # never queue behind the periodic bulk sweep — see
+        # backend/scripts/start-worker.sh.
+        source_for_user.apply_async(args=[str(doc.user_id)], queue="interactive")
     except Exception as exc:  # noqa: BLE001 - broker down; sweep will catch up
         log.warning("post_parse_sourcing_skipped", error=str(exc))
     return {"status": "done"}
