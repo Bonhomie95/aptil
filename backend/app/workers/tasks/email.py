@@ -33,6 +33,10 @@ _RETRY_DELAYS = (60, 240, 900)
     max_retries=len(_RETRY_DELAYS),
     acks_late=True,
     reject_on_worker_lost=True,
+    # Own queue, consumed by a dedicated worker process (see
+    # scripts/start-worker.sh) — a verification code must never wait behind a
+    # multi-minute Playwright apply job on the shared worker pool.
+    queue="critical",
 )
 def send_email_task(
     self, to: str, subject: str, body: str, html_body: str | None = None

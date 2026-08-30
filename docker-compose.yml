@@ -67,7 +67,10 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile.worker
-    command: celery -A app.workers.celery_app.celery worker --loglevel=info --concurrency=2
+    # Two Celery consumers (critical email queue + default queue) — see
+    # backend/scripts/start-worker.sh. Keeps verification/reset emails off the
+    # same pool as multi-minute Playwright apply jobs.
+    command: bash scripts/start-worker.sh
     env_file: .env
     volumes:
       - ./backend:/app

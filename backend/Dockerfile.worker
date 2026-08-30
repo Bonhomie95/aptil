@@ -24,14 +24,17 @@ RUN playwright install --with-deps chromium \
     && chmod -R a+rx /opt/playwright
 
 COPY . .
+RUN chmod +x scripts/start-worker.sh
 
 # The worker drives a browser over untrusted third-party pages — the one place
 # in this stack where running as root would be least excusable.
 RUN useradd --create-home --uid 10001 aptil && chown -R aptil:aptil /app
 USER aptil
 
+# Both consumers (critical + default, see scripts/start-worker.sh) must be
+# alive — a dead critical node would silently reintroduce the blocking bug.
 HEALTHCHECK --interval=60s --timeout=10s --start-period=30s --retries=3 \
-  CMD celery -A app.workers.celery_app.celery inspect ping -d celery@$HOSTNAME || exit 1
+  CMD celery -A app.workers.celery_app.celery inspect ping -d critical@$HOSTNAME,default@$HOSTNAME || exit 1
 
-# Overridden by docker-compose (celery worker command).
-CMD ["celery", "-A", "app.workers.celery_app.celery", "worker", "--loglevel=info"]
+# Overridden by docker-compose / render.yaml (dockerCommand), same script either way.
+CMD ["bash", "scripts/start-worker.sh"]
