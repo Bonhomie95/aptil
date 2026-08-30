@@ -33,7 +33,15 @@ async def _dispatch_per_user_sourcing() -> int:
     Each user's search is CV-driven and web-wide, so this replaced the old
     aggregator "demand queries" path.
     """
+    from app.services.job_cache import mark_sweep_started, sweep_in_flight
     from app.workers.tasks.sourcing import source_for_user
+
+    # A real run takes minutes (sequential external API calls), so on a large
+    # user base one sweep can outlast its own interval. Without this, the NEXT
+    # sweep piles a duplicate task behind whatever the last one already queued
+    # or is still running, and the backlog only ever grows. See
+    # job_cache.sweep_in_flight for the marker this checks/sets.
+    ttl = max(int(settings.SOURCING_INTERVAL_MINUTES * 60 * 1.5), 60)
 
     dispatched = 0
     users = await _eligible_users()
@@ -42,6 +50,9 @@ async def _dispatch_per_user_sourcing() -> int:
         # Nothing to search on until they have told us what they want.
         if profile is None or not (profile.target_titles or profile.work_history):
             continue
+        if sweep_in_flight("source", str(user.id)):
+            continue
+        mark_sweep_started("source", str(user.id), ttl)
         source_for_user.delay(str(user.id))
         dispatched += 1
     return dispatched
@@ -90,17 +101,28 @@ def match_all_users() -> dict:
 
 
 async def _match_all() -> dict:
+    from app.services.job_cache import mark_sweep_started, sweep_in_flight
     from app.workers.tasks.sourcing import match_for_user
 
+    # See the matching guard note on _dispatch_per_user_sourcing — same reason,
+    # same mechanism, its own "match" marker so the two sweeps never gate each
+    # other.
+    ttl = max(int(settings.MATCHING_INTERVAL_MINUTES * 60 * 1.5), 60)
+
+    dispatched = 0
     users = await _eligible_users()
     for user in users:
         # Only bother for users whose profile has something to match on.
         profile = await Profile.find_one(Profile.user_id == user.id)
         if profile is None or not (profile.skills or profile.work_history):
             continue
+        if sweep_in_flight("match", str(user.id)):
+            continue
+        mark_sweep_started("match", str(user.id), ttl)
         match_for_user.delay(str(user.id))
-    log.info("matching_sweep_dispatched", count=len(users))
-    return {"dispatched": len(users)}
+        dispatched += 1
+    log.info("matching_sweep_dispatched", count=dispatched)
+    return {"dispatched": dispatched}
 
 
 @celery.task(name="scheduler.purge_unapplicable")
@@ -143,7 +165,13 @@ def enqueue_all_users() -> dict:
 
 
 async def _enqueue_all() -> dict:
+    from app.services.job_cache import mark_sweep_started, sweep_in_flight
     from app.workers.tasks.apply import enqueue_for_user
+
+    # See the guard note on _dispatch_per_user_sourcing — own "apply" marker so
+    # a backed-up queue doesn't get a redundant enqueue-fan-out stacked on top
+    # of one already pending for the same user.
+    ttl = max(int(settings.APPLY_INTERVAL_MINUTES * 60 * 1.5), 60)
 
     users = await _eligible_users()
     dispatched = 0
@@ -157,6 +185,9 @@ async def _enqueue_all() -> dict:
             continue
         # "none" means the user opted out of us attaching a résumé, not out of
         # applying; but an unset profile with no résumé strategy is skipped.
+        if sweep_in_flight("apply", str(user.id)):
+            continue
+        mark_sweep_started("apply", str(user.id), ttl)
         enqueue_for_user.delay(str(user.id))
         dispatched += 1
     log.info("apply_sweep_dispatched", count=dispatched)

@@ -272,7 +272,14 @@ async def _notify_submitted(app_row: JobApplication, job: Job | None) -> None:
 @celery.task(name="apply.enqueue_for_user")
 def enqueue_for_user(user_id: str) -> dict:
     """Queue matched applications for a user, respecting the concurrency cap."""
-    return run_async(_enqueue_async(user_id))
+    from app.services.job_cache import clear_sweep
+
+    try:
+        return run_async(_enqueue_async(user_id))
+    finally:
+        # See sourcing.source_for_user's finally note — same reason, own
+        # "apply" marker.
+        clear_sweep("apply", user_id)
 
 
 async def _enqueue_async(user_id: str) -> dict:

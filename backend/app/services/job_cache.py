@@ -94,3 +94,46 @@ def is_unapplicable(user_id: str, job_id: str) -> bool:
     except Exception as exc:  # noqa: BLE001 - fail open (retry rather than hide)
         log.warning("apply_skip_check_failed", error=str(exc)[:200])
         return False
+
+
+# --- periodic-sweep in-flight guard -----------------------------------------
+#
+# scheduler.py's sweeps (sourcing/matching/apply) re-enqueue every eligible
+# user each interval, with no memory of whether that user's task from the
+# PREVIOUS interval is even done yet. Each real run takes minutes (sequential
+# external API calls), so on a large user base the queue can never drain
+# before the next sweep piles more onto it — this marker is set at ENQUEUE
+# time (covering queue wait, not just run time) and cleared by the task
+# itself on completion, so a sweep skips anyone who already has a pending or
+# running unit of work instead of stacking a duplicate behind it. The TTL is
+# the backstop: a dead worker or lost task must not permanently block that
+# user's sweeps, so callers pass something generous relative to their own
+# sweep interval (see scheduler.py).
+
+
+def _sweep_key(kind: str, user_id: str) -> str:
+    return f"sweep:{kind}:{user_id}"
+
+
+def sweep_in_flight(kind: str, user_id: str) -> bool:
+    """True if a sweep-triggered task of this kind is already queued or
+    running for this user."""
+    try:
+        return bool(_redis().exists(_sweep_key(kind, user_id)))
+    except Exception as exc:  # noqa: BLE001 - fail open, never block a sweep
+        log.warning("sweep_guard_check_failed", kind=kind, error=str(exc)[:200])
+        return False
+
+
+def mark_sweep_started(kind: str, user_id: str, ttl_seconds: int) -> None:
+    try:
+        _redis().set(_sweep_key(kind, user_id), "1", ex=ttl_seconds)
+    except Exception as exc:  # noqa: BLE001 - fail open
+        log.warning("sweep_guard_mark_failed", kind=kind, error=str(exc)[:200])
+
+
+def clear_sweep(kind: str, user_id: str) -> None:
+    try:
+        _redis().delete(_sweep_key(kind, user_id))
+    except Exception as exc:  # noqa: BLE001 - fail open
+        log.warning("sweep_guard_clear_failed", kind=kind, error=str(exc)[:200])
