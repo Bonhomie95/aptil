@@ -81,6 +81,9 @@ class ScoredJob(BaseModel):
     # Needed by _skill_overlap to recognize a web-search snippet (short by
     # nature) rather than treat it like a thin real posting.
     source: str | None = None
+    # Needed to snapshot onto the JobApplication row at match time — see
+    # JobApplication.job_snapshot.
+    apply_url: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -650,6 +653,16 @@ async def match_jobs_for_user(
             status=ApplicationStatus.MATCHED.value,
             match_score=score,
             match_reasons=reasons,
+            # See JobApplication.job_snapshot — survives the shared pool's
+            # retention TTL reaping this Job out from under an older row.
+            job_snapshot={
+                "title": job.title,
+                "company": job.company,
+                "location": job.location,
+                "remote": job.remote,
+                "apply_url": getattr(job, "apply_url", None),
+                "source": getattr(job, "source", None) or "other",
+            },
         )
         try:
             await application.insert()

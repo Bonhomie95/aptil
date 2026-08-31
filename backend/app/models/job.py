@@ -94,6 +94,16 @@ class JobApplication(TenantDocument):
     error_message: str | None = None
     submitted_at: datetime | None = None
 
+    # Snapshot of the job's identifying details (title/company/location/
+    # remote/apply_url/source) taken when this row was matched. The shared
+    # Job pool has a retention TTL (Job.Settings, JOB_RETENTION_DAYS) tuned
+    # for MATCH QUALITY — only match against postings still actually open —
+    # which is a different concern from a user's own historical record of
+    # what they applied to. The live Job is preferred whenever it still
+    # exists; this is the fallback once it does not, so a row that outlives
+    # its target still reads as something instead of "Role no longer listed".
+    job_snapshot: dict[str, Any] = Field(default_factory=dict)
+
     class Settings:
         name = "job_applications"
         indexes = [

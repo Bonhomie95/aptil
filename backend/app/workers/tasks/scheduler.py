@@ -127,12 +127,19 @@ async def _match_all() -> dict:
 
 @celery.task(name="scheduler.purge_unapplicable")
 def purge_unapplicable() -> dict:
-    """Delete any application Aptil could not complete.
+    """Delete rows that no longer have any reason to be on a dashboard.
 
-    Going forward the apply engine discards these on the spot; this sweep clears
-    legacy rows (e.g. parked before this behaviour existed) and anything that
-    slipped through, so the dashboard only ever holds real applications.
-    KEEPS in-progress managed-account verifications.
+    Two distinct cases, both cheap to justify:
+      * "discovered" — bookkeeping from before matching ever ran on a
+        posting. Never shown to a user, never will be.
+      * "matched" (never applied) whose target Job has been reaped by the
+        shared pool's retention TTL (Job.Settings, JOB_RETENTION_DAYS —
+        MongoDB expires it in the background, independent of this sweep).
+        Nothing was ever attempted, so there is no historical fact to
+        preserve — unlike a submitted/confirmed/needs_info/failed row, kept
+        forever regardless of whether the posting still exists, because an
+        attempt genuinely happened. Left alone, these accumulate as
+        permanent "Role no longer listed" rows the user can never act on.
     """
     return run_async(_purge_unapplicable())
 
@@ -142,21 +149,40 @@ async def _purge_unapplicable() -> dict:
     from app.models.job import JobApplication
 
     result = await JobApplication.find(
-        {
-            "$or": [
-                {
-                    "status": ApplicationStatus.NEEDS_INFO.value,
-                    "needs_action": {"$ne": "awaiting_email_verification"},
-                },
-                {"status": ApplicationStatus.FAILED.value},
-                {"status": ApplicationStatus.DISCOVERED.value},
-            ]
-        }
+        {"status": ApplicationStatus.DISCOVERED.value}
     ).delete()
     deleted = getattr(result, "deleted_count", 0)
+
+    stale = await _purge_stale_matches()
+    deleted += stale
+
     if deleted:
-        log.info("purged_unapplicable", count=deleted)
+        log.info("purged_unapplicable", count=deleted, stale_matches=stale)
     return {"deleted": deleted}
+
+
+async def _purge_stale_matches() -> int:
+    from app.models.enums import ApplicationStatus
+    from app.models.job import JobApplication
+
+    pipeline = [
+        {"$match": {"status": ApplicationStatus.MATCHED.value}},
+        {
+            "$lookup": {
+                "from": "jobs",
+                "localField": "job_id",
+                "foreignField": "_id",
+                "as": "job",
+            }
+        },
+        {"$match": {"job": {"$size": 0}}},
+        {"$project": {"_id": 1}},
+    ]
+    stale_ids = [row["_id"] for row in await JobApplication.aggregate(pipeline).to_list()]
+    if not stale_ids:
+        return 0
+    result = await JobApplication.find({"_id": {"$in": stale_ids}}).delete()
+    return getattr(result, "deleted_count", 0)
 
 
 @celery.task(name="scheduler.enqueue_all_users")

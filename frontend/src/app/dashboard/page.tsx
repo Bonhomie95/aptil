@@ -79,6 +79,32 @@ function label(status: string) {
   return status.replace(/_/g, " ");
 }
 
+// Human copy for an application's event trail (JobApplication.events —
+// "kind" is either a lifecycle step or the ATS adapter's outcome string).
+// Anything unmapped falls back to a de-slugged version of the kind itself,
+// so a new outcome the copy hasn't caught up to still reads reasonably.
+const EVENT_LABEL: Record<string, string> = {
+  queued: "Queued for submission",
+  requeued: "Re-queued",
+  apply_started: "Started filling out the application",
+  submitted: "Submitted",
+  needs_info: "Paused — needs your input",
+  failed: "Failed",
+  verification_pending: "Waiting on email verification for the new account",
+  ...NEEDS_ACTION_SHORT,
+};
+
+function eventLabel(kind: string) {
+  return EVENT_LABEL[kind] ?? label(kind);
+}
+
+function eventTime(at: string) {
+  const d = new Date(at);
+  return Number.isNaN(d.getTime())
+    ? at
+    : d.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
 // Rows whose real-world outcome the user tracks by hand.
 const EDITABLE = ["submitted", "confirmed", "interview"];
 
@@ -338,7 +364,12 @@ export default function DashboardPage() {
   // outcome ("Applied"). Both filter + sort CLIENT-SIDE, so changing them
   // reorders the current list instantly — no re-search.
   const MATCHES_STATUSES = ["matched", "queued"];
-  const APPLIED_STATUSES = ["submitted", "confirmed", "interview", "offer", "rejected"];
+  // needs_info/failed are attempts the engine made and could not finish or
+  // that failed outright — they belong here, with a reason, not hidden.
+  const APPLIED_STATUSES = [
+    "submitted", "confirmed", "interview", "offer", "rejected",
+    "needs_info", "failed",
+  ];
   const all = apps ?? [];
   const matchesCount = all.filter((a) => MATCHES_STATUSES.includes(a.status)).length;
   const appliedCount = all.filter((a) => APPLIED_STATUSES.includes(a.status)).length;
@@ -570,6 +601,8 @@ export default function DashboardPage() {
                     <option value="interview">Interview</option>
                     <option value="offer">Offer</option>
                     <option value="rejected">Rejected</option>
+                    <option value="needs_info">Needs your action</option>
+                    <option value="failed">Failed</option>
                   </select>
                 )}
                 <select
@@ -940,6 +973,26 @@ function ApplicationRow({
                     </li>
                   ))}
                 </ul>
+              </details>
+            )}
+
+            {a.events && a.events.length > 0 && (
+              <details className="mt-2" open={a.status === "queued"}>
+                <summary className="cursor-pointer text-xs text-muted-foreground transition-colors duration-200 ease-ease hover:text-foreground">
+                  Application activity
+                </summary>
+                <ol className="mt-1.5 space-y-1 border-l border-border pl-3 text-xs text-muted-foreground">
+                  {a.events.map((e, i) => (
+                    <li key={i}>
+                      <span className="tabular-nums text-subtle">{eventTime(e.at)}</span>
+                      {" — "}
+                      {eventLabel(e.kind)}
+                      {e.detail && e.detail !== e.kind && !(e.kind in EVENT_LABEL) && (
+                        <span className="text-subtle"> ({e.detail})</span>
+                      )}
+                    </li>
+                  ))}
+                </ol>
               </details>
             )}
 

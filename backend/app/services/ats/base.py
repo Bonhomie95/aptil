@@ -143,10 +143,22 @@ async def _visible_text(page: Page) -> str:
 
 
 async def detect_captcha(page: Page) -> bool:
-    """Return True if the page shows a CAPTCHA or bot-detection challenge.
+    """Return True if the page shows a VISIBLE CAPTCHA or bot-detection
+    challenge — not just markup that mentions one.
 
-    This is intentionally conservative: any positive signal means we STOP and
-    hand control back to the user. We do not attempt to solve or evade it.
+    Many ATS forms (Greenhouse in particular) embed an invisible reCAPTCHA
+    scaffold on every application for silent background spam-scoring: a
+    zero-height, empty div present on the page whether or not anything is
+    actually being challenged. A bare selector match flagged that div as a
+    challenge and parked EVERY Greenhouse application unconditionally, even
+    though a real visitor never sees anything there — this app's own
+    detector was too broad, not the site actually blocking it. Only a match
+    that is genuinely rendered (something a real visitor would actually see)
+    counts as a challenge now.
+
+    This is intentionally conservative about what DOES count: any visible
+    match means we STOP and hand control back to the user. We do not attempt
+    to solve or evade it.
     """
     selector = ", ".join(
         [
@@ -157,8 +169,9 @@ async def detect_captcha(page: Page) -> bool:
         ]
     )
     try:
-        if await page.query_selector(selector) is not None:
-            return True
+        for el in await page.query_selector_all(selector):
+            if await el.is_visible():
+                return True
     except Exception as exc:  # pragma: no cover - defensive against page teardown
         log.debug("captcha_probe_failed", error=str(exc)[:200])
 

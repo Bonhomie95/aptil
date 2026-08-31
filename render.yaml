@@ -193,11 +193,11 @@ services:
     region: oregon
     rootDir: backend
     dockerfilePath: ./Dockerfile.worker
-    # Three Celery consumers (critical email queue + interactive on-demand
-    # queue + default bulk-sweep queue) — see backend/scripts/start-worker.sh.
-    # Keeps verification/reset emails, and a user's own "Find new matches"
-    # click, off the same pool as multi-minute Playwright apply jobs and the
-    # periodic per-user sweep.
+    # Four Celery consumers (critical email queue + interactive on-demand
+    # sourcing queue + dedicated apply/Playwright queue + default bulk-sweep
+    # queue) — see backend/scripts/start-worker.sh. Keeps verification/reset
+    # emails, a user's own "Find new matches" click, and clicking "Apply" all
+    # off the same pool as the periodic per-user sweep.
     dockerCommand: bash scripts/start-worker.sh
     envVars:
       - fromGroup: aptil-shared
