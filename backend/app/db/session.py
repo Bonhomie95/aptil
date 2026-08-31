@@ -14,7 +14,15 @@ from collections.abc import Awaitable
 from beanie import init_beanie
 from pymongo import AsyncMongoClient
 
+from app.core import db_audit
 from app.core.config import settings
+
+# Diagnostic: logs every delete against watched collections with a stack
+# trace — see db_audit's docstring. Must run before the first client is
+# created (pymongo.monitoring listeners apply to clients created after
+# registration), which is guaranteed here since get_client() is defined
+# below, in the same module, and this executes at import time.
+db_audit.register()
 
 # Beanie 2.x drives MongoDB through PyMongo's native async client (Motor is retired).
 _client: AsyncMongoClient | None = None
