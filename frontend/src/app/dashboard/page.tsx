@@ -141,7 +141,7 @@ export default function DashboardPage() {
   const [automation, setAutomation] = useState<AutomationStatus | null>(null);
   const [automationBusy, setAutomationBusy] = useState(false);
   const [applyingBatch, setApplyingBatch] = useState(false);
-  const [tab, setTab] = useState<"matches" | "applied">("matches");
+  const [tab, setTab] = useState<"matches" | "needs_action" | "applied">("matches");
   const [filterStatus, setFilterStatus] = useState("all"); // sub-filter (Applied)
   const [filterLocation, setFilterLocation] = useState("");
   const [sortBy, setSortBy] = useState<"score" | "recent">("score");
@@ -359,25 +359,28 @@ export default function DashboardPage() {
   const matchedCount =
     apps?.filter((a) => a.status === "matched").length ?? 0;
 
-  // Two views over the same pipeline: jobs matched but not yet a completed
-  // application ("Matches"), and everything that has actually gone out or has an
-  // outcome ("Applied"). Both filter + sort CLIENT-SIDE, so changing them
-  // reorders the current list instantly — no re-search.
+  // Three views over the same pipeline: jobs matched but not yet attempted
+  // ("Matches"), an attempt the engine made that could not finish or that
+  // failed outright — with a reason, not hidden, but NOT counted as applied
+  // since nothing was actually sent ("Needs action"), and everything that
+  // genuinely went out or has a real employer outcome ("Applied"). All three
+  // filter + sort CLIENT-SIDE, so changing them reorders the current list
+  // instantly — no re-search.
   const MATCHES_STATUSES = ["matched", "queued"];
-  // needs_info/failed are attempts the engine made and could not finish or
-  // that failed outright — they belong here, with a reason, not hidden.
-  const APPLIED_STATUSES = [
-    "submitted", "confirmed", "interview", "offer", "rejected",
-    "needs_info", "failed",
-  ];
+  const NEEDS_ACTION_STATUSES = ["needs_info", "failed"];
+  const APPLIED_STATUSES = ["submitted", "confirmed", "interview", "offer", "rejected"];
   const all = apps ?? [];
   const matchesCount = all.filter((a) => MATCHES_STATUSES.includes(a.status)).length;
+  const needsActionCount = all.filter((a) => NEEDS_ACTION_STATUSES.includes(a.status)).length;
   const appliedCount = all.filter((a) => APPLIED_STATUSES.includes(a.status)).length;
-  const groupStatuses = tab === "matches" ? MATCHES_STATUSES : APPLIED_STATUSES;
+  const groupStatuses =
+    tab === "matches" ? MATCHES_STATUSES
+    : tab === "needs_action" ? NEEDS_ACTION_STATUSES
+    : APPLIED_STATUSES;
 
   const visibleApps = all
     .filter((a) => groupStatuses.includes(a.status))
-    .filter((a) => tab === "matches" || filterStatus === "all" || a.status === filterStatus)
+    .filter((a) => tab !== "applied" || filterStatus === "all" || a.status === filterStatus)
     .filter((a) => {
       const q = filterLocation.trim().toLowerCase();
       if (!q) return true;
@@ -567,6 +570,7 @@ export default function DashboardPage() {
               >
                 {([
                   ["matches", "Matches", matchesCount],
+                  ["needs_action", "Needs action", needsActionCount],
                   ["applied", "Applied", appliedCount],
                 ] as const).map(([key, lbl, n]) => (
                   <button
@@ -601,8 +605,6 @@ export default function DashboardPage() {
                     <option value="interview">Interview</option>
                     <option value="offer">Offer</option>
                     <option value="rejected">Rejected</option>
-                    <option value="needs_info">Needs your action</option>
-                    <option value="failed">Failed</option>
                   </select>
                 )}
                 <select
@@ -638,7 +640,9 @@ export default function DashboardPage() {
                 <p className="rounded-xl border border-border bg-card px-5 py-8 text-center text-sm text-muted-foreground">
                   {tab === "matches"
                     ? "No matches waiting. Press “Find new matches” to search."
-                    : "Nothing applied yet — apply to a match to see it here."}
+                    : tab === "needs_action"
+                      ? "Nothing needs your attention right now."
+                      : "Nothing applied yet — apply to a match to see it here."}
                 </p>
               ) : (
                 <ul className="space-y-3">
@@ -977,7 +981,16 @@ function ApplicationRow({
             )}
 
             {a.events && a.events.length > 0 && (
-              <details className="mt-2" open={a.status === "queued"}>
+              <details
+                className="mt-2"
+                open={["queued", "needs_info", "failed"].includes(a.status)}
+              >
+                {/* Open while in flight (queued) and once resolved with
+                    something worth explaining (needs_info/failed) — a clean
+                    "submitted" outcome stays collapsed since there's nothing
+                    to explain, but a parked or failed one shows why without
+                    an extra click, same as the row's own stalled styling
+                    already flags it as needing attention. */}
                 <summary className="cursor-pointer text-xs text-muted-foreground transition-colors duration-200 ease-ease hover:text-foreground">
                   Application activity
                 </summary>
@@ -1042,7 +1055,10 @@ function ApplicationRow({
                   className={buttonClass("secondary", "sm")}
                 >
                   {stalled ? (
-                    "Resume"
+                    // "Resume" read as the noun (your CV) in a job-application
+                    // context, not the verb this button actually means —
+                    // opens the employer's page to finish the application.
+                    "Finish application"
                   ) : (
                     <ExternalLink className="h-3.5 w-3.5" aria-hidden />
                   )}
