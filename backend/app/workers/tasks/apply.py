@@ -111,16 +111,18 @@ def submit_application(self, application_id: str) -> dict:
 
 
 async def _mark_failed(application_id: str, message: str) -> None:
-    """Terminal failure after retries: discard the application entirely — the
-    user never sees a job Aptil could not complete."""
-    from app.services.job_cache import mark_unapplicable
-
+    """Terminal failure after retries: keep the row, with the reason, instead
+    of leaving it stuck QUEUED or discarding it silently — the user should be
+    able to see that this one genuinely failed and why."""
     app_row = await JobApplication.get(uuid.UUID(application_id))
     if app_row is None:
         return
-    mark_unapplicable(str(app_row.user_id), str(app_row.job_id))
-    await app_row.delete()
-    log.info("application_discarded", application_id=application_id, reason=message)
+    app_row.status = ApplicationStatus.FAILED.value
+    app_row.error_message = message
+    _record_event(app_row, "failed", message)
+    app_row.touch()
+    await app_row.save()
+    log.info("application_failed_terminal", application_id=application_id, reason=message)
 
 
 async def _submit_async(application_id: str) -> dict:
@@ -150,15 +152,17 @@ async def _submit_async(application_id: str) -> dict:
 
     adapter = get_ats_adapter(job.ats_type if job else None)
     if adapter is None or not getattr(adapter, "auto_submits", False):
-        # No adapter we can submit with (a company-hosted page slipped through).
-        # Discard silently — never a "couldn't do" record.
-        from app.services.job_cache import mark_unapplicable
-
-        mark_unapplicable(str(app_row.user_id), str(app_row.job_id))
-        await app_row.delete()
-        log.info("application_discarded", application_id=application_id,
+        # No adapter we can submit with (a company-hosted page, or an ATS like
+        # Workday that only parks). Keep the row so the user sees exactly what
+        # to do next instead of the job silently disappearing.
+        app_row.status = ApplicationStatus.NEEDS_INFO.value
+        app_row.needs_action = "apply_on_employer_site"
+        _record_event(app_row, "needs_info", "no_auto_submit_adapter")
+        app_row.touch()
+        await app_row.save()
+        log.info("application_parked", application_id=application_id,
                  reason="no_auto_submit_adapter")
-        return {"status": "discarded"}
+        return {"status": app_row.status, "detail": "no_auto_submit_adapter"}
 
     profile = await Profile.find_one(Profile.user_id == app_row.user_id)
     credential = await _credential_for(app_row.user_id, job)
@@ -196,18 +200,25 @@ async def _submit_async(application_id: str) -> dict:
         await app_row.save()
         return {"status": app_row.status, "detail": detail}
 
-    # Anything Aptil could NOT complete (parked or failed) is DELETED, not kept:
-    # the user only ever sees jobs it applied to, never a pile of "couldn't do".
-    # A short-lived skip marker stops matching from recreating it in a loop; the
-    # marker expires so a transient block (a one-off CAPTCHA) is retried later.
+    # Anything Aptil could NOT complete (parked or failed) is KEPT, with the
+    # reason: the user should see exactly what happened to every application
+    # it tried, not just the ones that went through cleanly. This row's own
+    # existence already stops matching from recreating it — see
+    # match_jobs_for_user's existing_job_ids, built from every application
+    # regardless of status.
     if outcome != "submitted":
-        from app.services.job_cache import mark_unapplicable
-
-        mark_unapplicable(str(app_row.user_id), str(app_row.job_id))
-        await app_row.delete()
-        log.info("application_discarded", application_id=application_id,
-                 reason=detail or outcome)
-        return {"status": "discarded", "detail": detail}
+        # _ACTION_FOR is keyed by the adapter's specific `detail` reason code
+        # (e.g. "captcha_or_botcheck"), not the broad `outcome` bucket.
+        action = _ACTION_FOR.get(detail, "review")
+        app_row.status = ApplicationStatus.NEEDS_INFO.value
+        app_row.needs_action = action
+        app_row.error_message = detail or outcome
+        _record_event(app_row, outcome, detail)
+        app_row.touch()
+        await app_row.save()
+        log.info("application_parked", application_id=application_id,
+                 reason=detail or outcome, action=action)
+        return {"status": app_row.status, "detail": detail, "needs_action": action}
 
     # Success.
     app_row.status = ApplicationStatus.SUBMITTED.value
@@ -272,7 +283,14 @@ async def _notify_submitted(app_row: JobApplication, job: Job | None) -> None:
 @celery.task(name="apply.enqueue_for_user")
 def enqueue_for_user(user_id: str) -> dict:
     """Queue matched applications for a user, respecting the concurrency cap."""
-    return run_async(_enqueue_async(user_id))
+    from app.services.job_cache import clear_sweep
+
+    try:
+        return run_async(_enqueue_async(user_id))
+    finally:
+        # See sourcing.source_for_user's finally note — same reason, own
+        # "apply" marker.
+        clear_sweep("apply", user_id)
 
 
 async def _enqueue_async(user_id: str) -> dict:
@@ -324,14 +342,19 @@ async def _enqueue_async(user_id: str) -> dict:
         if wants_tailoring and app_row.resume_document_id is None:
             # Tailor first, then submit: chaining keeps the per-job résumé
             # attached instead of leaving tailoring as unreachable code.
+            # Only the submit step needs the dedicated "apply" queue — see
+            # its note below; tailoring stays on the default queue.
             from app.workers.tasks.tailoring import tailor_for_application
 
             (
                 tailor_for_application.si(str(app_row.id))
-                | submit_application.si(str(app_row.id))
+                | submit_application.si(str(app_row.id)).set(queue="apply")
             ).apply_async()
         else:
-            submit_application.delay(str(app_row.id))
+            # Dedicated queue: Playwright submissions must never wait behind
+            # the bulk sourcing/matching sweep on the default queue — see
+            # backend/scripts/start-worker.sh.
+            submit_application.apply_async(args=[str(app_row.id)], queue="apply")
         queued += 1
 
     return {"queued": queued, "in_flight": in_flight}
@@ -413,7 +436,8 @@ async def _verify_managed_async(inbound_email_id: str, credential_id: str) -> di
         _record_event(row, "requeued", "email_verified")
         row.touch()
         await row.save()
-        submit_application.delay(str(row.id))
+        # Dedicated queue — see enqueue_for_user's note above.
+        submit_application.apply_async(args=[str(row.id)], queue="apply")
         requeued += 1
 
     log.info("managed_account_verified", site=credential.site_domain,

@@ -165,7 +165,9 @@ async def update_profile(
         try:
             from app.workers.tasks.sourcing import source_for_user
 
-            source_for_user.delay(str(user.id))
+            # Dedicated queue: this is the user waiting on their own action, not
+            # bulk background work — see backend/scripts/start-worker.sh.
+            source_for_user.apply_async(args=[str(user.id)], queue="interactive")
         except Exception as exc:  # noqa: BLE001 - broker down; sweep catches up
             log.warning("target_change_sourcing_skipped", error=str(exc))
     return profile

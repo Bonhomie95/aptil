@@ -19,8 +19,11 @@ from app.services import billing
 router = APIRouter()
 
 # Statuses shown on the dashboard by default: the pipeline toward a real
-# application plus genuine employer outcomes. Parked (needs_info) and failed are
-# excluded — a job Aptil could not apply to is never surfaced.
+# application, genuine employer outcomes, and an attempt the engine could not
+# finish on its own (needs_info) or that failed outright — surfaced WITH a
+# reason (see submit_application's needs_action wiring) rather than silently
+# discarded, so a user can see what actually happened to every application it
+# tried, not just the ones that went through cleanly.
 _VISIBLE_STATUSES = [
     ApplicationStatus.MATCHED.value,
     ApplicationStatus.QUEUED.value,
@@ -29,6 +32,8 @@ _VISIBLE_STATUSES = [
     ApplicationStatus.INTERVIEW.value,
     ApplicationStatus.OFFER.value,
     ApplicationStatus.REJECTED.value,
+    ApplicationStatus.NEEDS_INFO.value,
+    ApplicationStatus.FAILED.value,
 ]
 log = get_logger(__name__)
 
@@ -84,6 +89,10 @@ class ApplicationRead(BaseModel):
     credential_id: uuid.UUID | None = None
     #: The tailored cover letter, if one has been generated for this job.
     cover_letter: str | None = None
+    # Timestamped audit trail (queued -> apply_started -> outcome), so the
+    # dashboard can show what actually happened to this application rather
+    # than just its current status. See apply.py's _record_event.
+    events: list[dict] = []
     # Null when the underlying posting was purged; the row still counts in stats.
     job: JobRead | None = None
     model_config = {"from_attributes": True}
@@ -238,9 +247,10 @@ async def my_applications(
     status_filter: str | None = Query(default=None, alias="status", max_length=40),
     include_all: bool = Query(
         default=False,
-        description="Include parked/failed applications. Off by default so the "
-        "dashboard shows only jobs Aptil could apply to — pending, applied, or "
-        "further along — and never a pile of things it couldn't complete.",
+        description="Include pre-match rows (status=discovered) that never "
+        "became a candidate application. Off by default — those aren't "
+        "something a user has any reason to see; everything from a real match "
+        "onward, including a parked or failed attempt, is always included.",
     ),
     user: User = Depends(get_current_user),
 ):
@@ -248,12 +258,12 @@ async def my_applications(
     if status_filter:
         criteria["status"] = status_filter
     elif not include_all:
-        # Only the pipeline toward a real application: matched (pending),
-        # queued (in flight), submitted/confirmed, and the human outcomes
-        # (interview/offer/rejected). Everything Aptil could NOT complete —
-        # needs_info (parked, captcha, credential, company-site) and failed —
-        # is hidden entirely. The user only ever sees jobs it applied to or is
-        # applying to.
+        # The whole real pipeline: matched (pending), queued (in flight),
+        # submitted/confirmed, the human outcomes (interview/offer/rejected),
+        # and an attempt the engine could not finish (needs_info) or that
+        # failed outright — WITH the reason, so the user can see what actually
+        # happened rather than have it vanish. Only pre-match "discovered"
+        # rows (never became a candidate application) are hidden by default.
         criteria["status"] = {"$in": _VISIBLE_STATUSES}
 
     # Best match first: the primary action on this list is "Apply", so the roles
@@ -272,46 +282,11 @@ async def my_applications(
     )
     jobs_by_id = {job.id: job for job in jobs}
 
-    # Hide rows that no longer fit the user's current location/company choices —
-    # but ONLY while they are still just "matched" (not yet acted on). This makes
-    # stale cross-country matches (e.g. from before the user picked USA)
-    # disappear on reload without a re-match, while never hiding an application
-    # the user has already engaged with.
-    from app.services.geo import location_allowed
-    from app.services.matching import _company_key, _role_key
-
-    countries, excluded = await _user_filters(user)
-
-    def _keep(app_row) -> bool:
-        if app_row.status != ApplicationStatus.MATCHED.value:
-            return True
-        job = jobs_by_id.get(app_row.job_id)
-        if job is None:
-            return True
-        if excluded and _company_key(job.company) in excluded:
-            return False
-        return location_allowed(getattr(job, "location", None), countries)
-
-    # Collapse cross-listing duplicates in the display: the same role at the same
-    # company (a different city, so a distinct row) shows once. Applied/engaged
-    # rows are never hidden — dedupe only among still-"matched" rows, keeping the
-    # first (already sorted best-score-first).
-    seen_roles: set[tuple[str, str]] = set()
-
-    def _not_duplicate(app_row) -> bool:
-        if app_row.status != ApplicationStatus.MATCHED.value:
-            return True
-        job = jobs_by_id.get(app_row.job_id)
-        if job is None:
-            return True
-        key = _role_key(job)
-        if key in seen_roles:
-            return False
-        seen_roles.add(key)
-        return True
-
-    # A purged Job must not make the row vanish: the dashboard list would then
-    # disagree with /stats, which counts every application.
+    # A match stays on the dashboard until the user applies to it — a later
+    # change to target countries/excluded companies affects future matching
+    # (see services/matching.py), not one already found. A purged Job must not
+    # make the row vanish either: it would then disagree with /stats, which
+    # counts every application.
     return [
         ApplicationRead(
             id=app.id,
@@ -325,28 +300,59 @@ async def my_applications(
             needs_action=app.needs_action,
             credential_id=app.credential_id,
             cover_letter=app.cover_letter,
-            job=jobs_by_id.get(app.job_id),
+            events=app.events,
+            job=_job_for(app, jobs_by_id),
         )
         for app in apps
-        if _keep(app) and _not_duplicate(app)
     ]
+
+
+def _job_for(app: JobApplication, jobs_by_id: dict) -> JobRead | None:
+    """The live Job when it still exists, else a JobRead built from the
+    snapshot taken at match time (see JobApplication.job_snapshot) — so a row
+    that outlives its target still shows a title/company instead of "Role no
+    longer listed". None only for a row from before this field existed.
+    """
+    live = jobs_by_id.get(app.job_id)
+    if live is not None:
+        return live
+    snap = app.job_snapshot
+    if not snap or not snap.get("title") or not snap.get("company"):
+        return None
+    return JobRead(
+        id=app.job_id,
+        company=snap["company"],
+        title=snap["title"],
+        location=snap.get("location"),
+        remote=snap.get("remote"),
+        source=snap.get("source") or "other",
+        apply_url=snap.get("apply_url") or "",
+    )
 
 
 @router.get("/stats")
 async def dashboard_stats(user: User = Depends(get_current_user)):
-    """Counts per application status for the dashboard."""
+    """Counts per application status for the dashboard.
+
+    Must agree with what ``my_applications`` actually shows — same
+    ``_VISIBLE_STATUSES`` scope, no extra filtering — since neither endpoint
+    hides a "matched" row for anything short of the user applying to it.
+    """
     pipeline = [
-        {"$match": {"user_id": user.id, "tenant_id": user.tenant_id}},
+        {
+            "$match": {
+                "user_id": user.id,
+                "tenant_id": user.tenant_id,
+                "status": {"$in": _VISIBLE_STATUSES},
+            }
+        },
         {"$group": {"_id": "$status", "count": {"$sum": 1}}},
     ]
     rows = await JobApplication.aggregate(pipeline).to_list()
     by_status = {row["_id"]: row["count"] for row in rows if row.get("_id")}
-    sub = await billing.get_active_subscription(user.tenant_id)
+    total = sum(by_status.values())
 
-    # "Total" must match what the dashboard actually shows: only the pipeline
-    # the user can see (_VISIBLE_STATUSES), never the parked/failed rows that
-    # are hidden from the list. Otherwise Total says 6 while the list is empty.
-    total = sum(by_status.get(st, 0) for st in _VISIBLE_STATUSES)
+    sub = await billing.get_active_subscription(user.tenant_id)
 
     return {
         "by_status": by_status,
@@ -400,7 +406,8 @@ async def update_application_status(
         needs_action=app_row.needs_action,
         credential_id=app_row.credential_id,
         cover_letter=app_row.cover_letter,
-        job=JobRead.model_validate(job) if job else None,
+        events=app_row.events,
+        job=JobRead.model_validate(job) if job else _job_for(app_row, {}),
     )
 
 
@@ -428,7 +435,12 @@ async def request_matching(user: User = Depends(get_verified_user)):
         )
 
     try:
-        async_result = source_for_user.delay(str(user.id))
+        # Dedicated queue: a click here must never wait behind the periodic
+        # bulk sweep's per-user backlog (hundreds of users x ~3-4 min each on
+        # the default queue) — see backend/scripts/start-worker.sh.
+        async_result = source_for_user.apply_async(
+            args=[str(user.id)], queue="interactive"
+        )
     except Exception as exc:  # noqa: BLE001 - broker down
         log.error("match_enqueue_failed", user_id=str(user.id), error=str(exc))
         raise HTTPException(
@@ -497,7 +509,7 @@ async def apply_now(
     user: User = Depends(get_verified_user),
 ):
     """Explicit, per-application consent to submit (compliance §1)."""
-    from app.workers.tasks.apply import submit_application
+    from app.workers.tasks.apply import _record_event, submit_application
 
     app_row = await JobApplication.find_one(
         JobApplication.id == application_id,
@@ -522,10 +534,18 @@ async def apply_now(
         )
 
     app_row.status = ApplicationStatus.QUEUED.value
+    # First entry in the activity trail — without this, a user clicking Apply
+    # sees nothing at all until the task actually starts running, which is
+    # exactly the "just keeps loading" gap this event trail exists to close.
+    _record_event(app_row, "queued")
     app_row.touch()
     await app_row.save()
     try:
-        submit_application.delay(str(app_row.id))
+        # Dedicated queue: this is one Playwright submission the user is
+        # actively waiting on — it must never sit behind the bulk sweeps on
+        # the default queue, which is exactly why "Apply" used to spin
+        # forever. See backend/scripts/start-worker.sh.
+        submit_application.apply_async(args=[str(app_row.id)], queue="apply")
     except Exception as exc:  # noqa: BLE001
         app_row.status = ApplicationStatus.MATCHED.value
         await app_row.save()
@@ -558,7 +578,7 @@ async def apply_batch(
     first, stopping at the plan quota. Explicit per-batch consent (compliance
     §1): nothing is submitted the user did not ask for.
     """
-    from app.workers.tasks.apply import submit_application
+    from app.workers.tasks.apply import _record_event, submit_application
 
     rows = (
         await JobApplication.find(
@@ -580,10 +600,13 @@ async def apply_batch(
         if not await billing.can_apply(user.tenant_id):
             break
         app_row.status = ApplicationStatus.QUEUED.value
+        # See apply_now's note — first entry in the activity trail.
+        _record_event(app_row, "queued")
         app_row.touch()
         await app_row.save()
         try:
-            submit_application.delay(str(app_row.id))
+            # Dedicated queue — see apply_now's note above.
+            submit_application.apply_async(args=[str(app_row.id)], queue="apply")
             queued += 1
         except Exception as exc:  # noqa: BLE001 - broker down mid-batch
             app_row.status = ApplicationStatus.MATCHED.value

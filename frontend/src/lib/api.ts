@@ -341,6 +341,8 @@ export type Application = {
   /** Machine-readable reason this row needs the user, if it does. */
   needs_action?: string | null;
   credential_id?: string | null;
+  /** Timestamped audit trail: queued -> apply_started -> outcome. */
+  events?: { at: string; kind: string; detail?: string }[];
 };
 
 export type InterviewSummary = {

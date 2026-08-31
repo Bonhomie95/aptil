@@ -141,7 +141,24 @@ class JobConnector(ABC):
     def _browser_fetch_text(self, url: str, params: dict | None = None) -> str | None:
         """Fetch a URL's body text via headless Chromium. Best-effort, never
         raises. Runs only in a synchronous context (connector .fetch), never
-        inside the async apply engine."""
+        inside the async apply engine.
+
+        Playwright's sync API is restricted to the main thread — calling it
+        from a worker thread (sourcing.source_for_user fetches several
+        connectors concurrently via a ThreadPoolExecutor) doesn't raise or
+        hang outright, but degrades badly: measured ~20% SLOWER than running
+        everything sequentially on the main thread, from lock contention in
+        the sync wrapper. Skip the fallback off the main thread instead — the
+        direct fetch already failed, so this source just yields nothing this
+        run, the same outcome as any other connector failure.
+        """
+        import threading
+
+        if threading.current_thread() is not threading.main_thread():
+            log.warning(
+                "browser_fetch_skipped_non_main_thread", source=self.source, url=url
+            )
+            return None
         if params:
             from urllib.parse import urlencode
 

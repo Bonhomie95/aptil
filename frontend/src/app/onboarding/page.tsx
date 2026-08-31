@@ -112,8 +112,15 @@ const STEPS: {
 ];
 
 const MAX_UPLOAD_MB = 10;
+// Fast phase: check every 2s for the first minute (the common case). Slow
+// phase: fall back to every 10s after that, up to the backend's own
+// task_time_limit (10 min — see cv.parse_resume_document) — a slow LLM call
+// shouldn't leave "we'll fill it in" unfulfilled just because it ran past a
+// minute.
 const POLL_INTERVAL_MS = 2000;
 const POLL_ATTEMPTS = 30;
+const SLOW_POLL_INTERVAL_MS = 10_000;
+const SLOW_POLL_ATTEMPTS = 54;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -140,6 +147,10 @@ export default function OnboardingPage() {
   const [unsaved, setUnsaved] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const dirty = useRef(false);
+  // Bumped on every upload so a poll from a superseded upload (the user hit
+  // "Click to replace" while the previous one was still parsing) recognizes
+  // itself as stale and stops touching state instead of racing the new one.
+  const uploadGeneration = useRef(0);
 
   const markDirty = useCallback(() => {
     dirty.current = true;
@@ -156,6 +167,14 @@ export default function OnboardingPage() {
       setParseError(s.resume_parse_error);
     } else if (s.resume_parse_status === "done") {
       setParseStatus("done");
+    } else if (s.resume_parse_status === "pending") {
+      // Parsing was still running when the tab loaded (a slow parse that
+      // outlasted the previous poll window, or the user reloaded/came back
+      // before it finished). Resume watching instead of leaving the "we'll
+      // fill it in" promise broken with nothing left checking.
+      setParseStatus("parsing");
+      const generation = ++uploadGeneration.current;
+      void pollResumeParse(false, generation);
     }
   }, []);
 
@@ -312,39 +331,14 @@ export default function OnboardingPage() {
       // this, taking the server's profile below would silently discard them.
       if (dirty.current) await saveProfile();
       const replacing = hasResume;
+      const generation = ++uploadGeneration.current;
       await api.uploadResume(file);
       setHasResume(true);
-      // Poll until the background parse finishes, then prefill.
-      for (let i = 0; i < POLL_ATTEMPTS; i++) {
-        await sleep(POLL_INTERVAL_MS);
-        const s = await api.onboardingState();
-        if (s.resume_parse_status === "done") {
-          // Take the server's profile as-is rather than merging into local
-          // state. The server has just done the merge that matters (new CV over
-          // the old CV's values, never over the user's own edits), so a second
-          // "only fill blanks" pass here would re-introduce the exact bug:
-          // replace a wrongly-uploaded CV and the stale details stay on screen.
-          setProfile(s.profile ?? {});
-          dirty.current = false;
-          setParseStatus("done");
-          setNote(
-            replacing
-              ? "We re-read your CV and refreshed the details below — anything you had already edited yourself is kept."
-              : "We imported what we could — check the next steps and edit anything.",
-          );
-          return;
-        }
-        if (s.resume_parse_status === "failed") {
-          setParseStatus("failed");
-          setParseError(
-            s.resume_parse_error ??
-              "We couldn't read that file. You can fill your details in manually.",
-          );
-          return;
-        }
-      }
-      // Be honest that it's still running rather than claiming success.
-      setParseStatus("timeout");
+      // The upload itself is done — "carry on" is true from here. Parsing keeps
+      // running in the background (pollResumeParse) without holding `busy`,
+      // so it can't leave Continue disabled for up to a minute while the CV is
+      // still being read.
+      void pollResumeParse(replacing, generation);
     } catch (err) {
       setParseStatus("idle");
       setHasResume(false);
@@ -352,6 +346,66 @@ export default function OnboardingPage() {
     } finally {
       setBusy(false);
     }
+  }
+
+  // Returns true once the parse has reached a terminal state (done/failed)
+  // and the caller should stop polling.
+  function applyParseResult(s: OnboardingState, replacing: boolean): boolean {
+    if (s.resume_parse_status === "done") {
+      // Take the server's profile as-is rather than merging into local
+      // state. The server has just done the merge that matters (new CV over
+      // the old CV's values, never over the user's own edits), so a second
+      // "only fill blanks" pass here would re-introduce the exact bug:
+      // replace a wrongly-uploaded CV and the stale details stay on screen.
+      setProfile(s.profile ?? {});
+      dirty.current = false;
+      setParseStatus("done");
+      setNote(
+        replacing
+          ? "We re-read your CV and refreshed the details below — anything you had already edited yourself is kept."
+          : "We imported what we could — check the next steps and edit anything.",
+      );
+      return true;
+    }
+    if (s.resume_parse_status === "failed") {
+      setParseStatus("failed");
+      setParseError(
+        s.resume_parse_error ??
+          "We couldn't read that file. You can fill your details in manually.",
+      );
+      return true;
+    }
+    return false;
+  }
+
+  async function pollResumeParse(replacing: boolean, generation: number) {
+    const phases: [intervalMs: number, attempts: number][] = [
+      [POLL_INTERVAL_MS, POLL_ATTEMPTS],
+      [SLOW_POLL_INTERVAL_MS, SLOW_POLL_ATTEMPTS],
+    ];
+    for (const [phaseIndex, [intervalMs, attempts]] of phases.entries()) {
+      for (let i = 0; i < attempts; i++) {
+        await sleep(intervalMs);
+        if (uploadGeneration.current !== generation) return; // superseded by a newer upload
+        try {
+          const s = await api.onboardingState();
+          if (uploadGeneration.current !== generation) return;
+          if (applyParseResult(s, replacing)) return;
+        } catch {
+          // Transient network hiccup while polling — the upload already
+          // succeeded, so keep trying rather than surfacing an upload error.
+        }
+      }
+      // Phase exhausted without a result. Before the last phase, be honest
+      // that it's still running (rather than claiming success) while falling
+      // back to the slower phase.
+      if (phaseIndex < phases.length - 1) setParseStatus("timeout");
+    }
+    // Backend's own task_time_limit has long since passed — it isn't coming.
+    setParseStatus("failed");
+    setParseError(
+      "This is taking longer than expected. Please fill your details in manually.",
+    );
   }
 
   async function generateResume() {

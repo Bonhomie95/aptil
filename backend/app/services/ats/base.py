@@ -143,10 +143,29 @@ async def _visible_text(page: Page) -> str:
 
 
 async def detect_captcha(page: Page) -> bool:
-    """Return True if the page shows a CAPTCHA or bot-detection challenge.
+    """Return True if the page shows a VISIBLE, BLOCKING CAPTCHA or
+    bot-detection challenge — not just markup that mentions one.
 
-    This is intentionally conservative: any positive signal means we STOP and
-    hand control back to the user. We do not attempt to solve or evade it.
+    Two things that are NOT a real challenge, but that a bare selector match
+    used to flag as one, parking the application even though nothing was
+    actually blocking it:
+
+    1. An invisible reCAPTCHA scaffold. Greenhouse in particular embeds a
+       zero-height, empty div on every application for silent background
+       spam-scoring — never shown, never blocking. Excluded by the
+       ``is_visible()`` check below.
+    2. Google's reCAPTCHA v3 corner badge (class ``grecaptcha-badge``, and
+       its containing ``grecaptcha-logo``/iframe). Google's own terms
+       *require* sites using invisible v3 scoring to display this small
+       floating badge, but it is pure background scoring — zero user
+       interaction, never a barrier to submitting the form. It IS visible by
+       design, so only the badge/logo class check below excludes it; a real
+       v2 challenge checkbox (class ``g-recaptcha`` with no ``-badge``
+       suffix) is a different element and is not excluded.
+
+    This is intentionally conservative about what DOES count: any visible,
+    non-badge match means we STOP and hand control back to the user. We do
+    not attempt to solve or evade it.
     """
     selector = ", ".join(
         [
@@ -157,7 +176,14 @@ async def detect_captcha(page: Page) -> bool:
         ]
     )
     try:
-        if await page.query_selector(selector) is not None:
+        for el in await page.query_selector_all(selector):
+            if not await el.is_visible():
+                continue
+            is_v3_badge = await el.evaluate(
+                "e => e.closest('.grecaptcha-badge, .grecaptcha-logo') !== null"
+            )
+            if is_v3_badge:
+                continue
             return True
     except Exception as exc:  # pragma: no cover - defensive against page teardown
         log.debug("captcha_probe_failed", error=str(exc)[:200])

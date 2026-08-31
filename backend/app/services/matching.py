@@ -24,7 +24,7 @@ from pymongo.errors import DuplicateKeyError
 
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.models.enums import ApplicationStatus
+from app.models.enums import ApplicationStatus, JobSource
 from app.models.job import Job, JobApplication
 from app.models.profile import Profile
 from app.services.ats import can_auto_apply
@@ -44,6 +44,15 @@ W_LOCATION = 0.2
 # terrible match when it was a good one. The extra skills a job doesn't happen
 # to need are not evidence against the candidate.
 SKILL_TARGET = 3
+
+# A web-search hit's "description" is a search-engine snippet (Serper/Brave/
+# Tavily return ~150-160 chars) — the connector's `desc` parameter is literally
+# the provider's `snippet`/`content` field, not the posting body. Below this
+# length it is a snippet, not real posting text, so zero skill words appearing
+# in it is not evidence the role doesn't need them. Other sources (Greenhouse,
+# Remotive, the free boards, ...) return the actual posting text and are never
+# this short for a real job, so this only ever softens a WEB_SEARCH job.
+THIN_DESCRIPTION_CHARS = 200
 
 # Never load the whole collection into memory; cap what one pass considers.
 MAX_JOBS_CONSIDERED = 2000
@@ -69,6 +78,12 @@ class ScoredJob(BaseModel):
     # Needed by the auto-appliable filter in match_jobs_for_user — without it
     # the projection drops ats_type and every job looks un-appliable.
     ats_type: str | None = None
+    # Needed by _skill_overlap to recognize a web-search snippet (short by
+    # nature) rather than treat it like a thin real posting.
+    source: str | None = None
+    # Needed to snapshot onto the JobApplication row at match time — see
+    # JobApplication.job_snapshot.
+    apply_url: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -161,7 +176,24 @@ def _skill_overlap(profile: Profile, job: Job | ScoredJob) -> tuple[float, list[
     # Full credit at SKILL_TARGET matches (or at everything the user listed, if
     # they listed fewer). See the note on SKILL_TARGET.
     target = min(len(skills), SKILL_TARGET)
-    return min(1.0, len(matched) / target) if target else 0.0, matched
+    overlap = min(1.0, len(matched) / target) if target else 0.0
+
+    # A real positive match is real evidence — keep it. But a ZERO from a web
+    # search hit's snippet isn't evidence the role doesn't need these skills,
+    # it's just too little text to tell — score that as unknown (neutral), the
+    # same rule `_location_score` already applies when it has no usable signal,
+    # not as a strike against the job. Scoped to WEB_SEARCH specifically: every
+    # other source (Greenhouse, the free boards, ...) returns the real posting
+    # body, where a genuine zero-overlap IS evidence the role doesn't fit (see
+    # test_short_skills_do_not_match_everything) and must still count as one.
+    is_web_search_snippet = (
+        getattr(job, "source", None) == JobSource.WEB_SEARCH.value
+        and len((job.description or "").strip()) < THIN_DESCRIPTION_CHARS
+    )
+    if not matched and is_web_search_snippet:
+        return 0.5, matched
+
+    return overlap, matched
 
 
 # Words that describe level rather than the job itself. Matching on these alone
@@ -239,6 +271,35 @@ def role_relevant(profile: Profile, job: Job | ScoredJob) -> bool:
     return False
 
 
+def _target_domain_tokens(profile: Profile) -> set[str]:
+    """Union of domain tokens across every stated/derived target title.
+
+    Feeds the DB-side title prefilter in ``match_jobs_for_user`` — see
+    ``_title_regex``.
+    """
+    out: set[str] = set()
+    for t in target_titles(profile):
+        out |= _domain_tokens(t)
+    return out
+
+
+def _title_regex(domain_tokens: set[str]) -> str | None:
+    """Whole-word alternation of ``domain_tokens``, for a Mongo ``$regex``
+    prefilter on ``Job.title``. ``None`` if there is nothing to search for.
+
+    Precision does not matter here — ``role_relevant`` still makes the exact
+    accept/reject call in Python afterward. This only decides which jobs are
+    worth pulling out of a pool that can run into the tens of thousands, so a
+    false-positive match just costs one extra (cheap) scoring pass, while a
+    false negative would silently hide a real match — the risk this exists to
+    close (see match_jobs_for_user's MAX_JOBS_CONSIDERED note).
+    """
+    escaped = sorted(re.escape(t) for t in domain_tokens if t)
+    if not escaped:
+        return None
+    return r"(?<![a-z0-9])(" + "|".join(escaped) + r")(?![a-z0-9])"
+
+
 def _title_similarity(profile: Profile, job: Job | ScoredJob) -> float:
     """Overlap between the user's most recent title and the posting's.
 
@@ -304,9 +365,18 @@ def score_job(
     if not with_reasons:
         return score
 
+    # skills == 0.5 with nothing matched is _skill_overlap's neutral case (a
+    # web-search snippet too short to judge), not a real 50% overlap — say so
+    # plainly rather than showing a number that looks computed.
+    if matched:
+        skill_reason = f"Skill overlap {skills:.0%} — matched {', '.join(matched[:6])}"
+    elif skills == 0.5:
+        skill_reason = "Skill overlap unknown — posting text was too short to check"
+    else:
+        skill_reason = f"Skill overlap {skills:.0%} — no skills matched"
+
     reasons = [
-        f"Skill overlap {skills:.0%}"
-        + (f" — matched {', '.join(matched[:6])}" if matched else " — no skills matched"),
+        skill_reason,
         f"Title similarity {title:.0%} vs your most recent role",
         f"Location/remote fit {location:.0%}",
     ]
@@ -458,19 +528,55 @@ async def match_jobs_for_user(
     )
     existing_job_ids = {row["job_id"] for row in existing_rows if row.get("job_id")}
 
-    # Bounded, newest-first scan instead of loading the entire collection, and
-    # projected to the fields scoring actually reads (see ScoredJob). Restricted
-    # to jobs Aptil can actually apply to, so the scan budget surfaces appliable
+    # Bounded scan instead of loading the entire collection, and projected to
+    # the fields scoring actually reads (see ScoredJob). Restricted to jobs
+    # Aptil can actually apply to, so the scan budget surfaces appliable
     # matches instead of being spent on company-hosted pages we would drop.
     from app.services.ats import auto_appliable_ats_types
 
-    jobs = (
-        await Job.find({"ats_type": {"$in": auto_appliable_ats_types()}})
-        .sort(-Job.created_at)
-        .limit(MAX_JOBS_CONSIDERED)
-        .project(ScoredJob)
-        .to_list()
-    )
+    base_criteria: dict = {"ats_type": {"$in": auto_appliable_ats_types()}}
+
+    # Relevance before recency. A plain "newest N" scan starves any user whose
+    # target role isn't well-represented in whatever was JUST re-fetched: the
+    # pool runs into the tens of thousands, "newest 2000" is a thin recency
+    # slice of it, and a niche/specific title can have nearly all of its real
+    # candidates sitting outside that slice — found below newest-2000 by
+    # created_at even though they'd score well. Search by the user's own
+    # target-title words FIRST, so a good candidate is found regardless of
+    # when it happened to be (re)discovered, then only fall back to (and top
+    # up with) the broad newest-first scan — which is exactly the old
+    # behavior — for users with no clear target, or when the targeted search
+    # alone comes back too thin to be worth ranking.
+    jobs: list[ScoredJob] = []
+    seen_ids: set[uuid.UUID] = set()
+
+    pattern = _title_regex(_target_domain_tokens(profile))
+    if pattern:
+        targeted = (
+            await Job.find({**base_criteria, "title": {"$regex": pattern, "$options": "i"}})
+            .sort(-Job.created_at)
+            .limit(MAX_JOBS_CONSIDERED)
+            .project(ScoredJob)
+            .to_list()
+        )
+        jobs.extend(targeted)
+        seen_ids.update(j.id for j in targeted)
+
+    # Thin-result threshold, not "only when empty": a handful of targeted hits
+    # isn't enough to rank well, and a real fit whose title shares no literal
+    # word with the target (a synonym the acronym table doesn't cover) is only
+    # ever reachable through this broad pass.
+    if len(jobs) < max(limit * 3, 200):
+        remaining = MAX_JOBS_CONSIDERED - len(jobs)
+        if remaining > 0:
+            broad = (
+                await Job.find(base_criteria)
+                .sort(-Job.created_at)
+                .limit(remaining)
+                .project(ScoredJob)
+                .to_list()
+            )
+            jobs.extend(j for j in broad if j.id not in seen_ids)
 
     excluded = _excluded_company_keys(profile)
     allowed_countries = _target_country_codes(profile)
@@ -547,6 +653,16 @@ async def match_jobs_for_user(
             status=ApplicationStatus.MATCHED.value,
             match_score=score,
             match_reasons=reasons,
+            # See JobApplication.job_snapshot — survives the shared pool's
+            # retention TTL reaping this Job out from under an older row.
+            job_snapshot={
+                "title": job.title,
+                "company": job.company,
+                "location": job.location,
+                "remote": job.remote,
+                "apply_url": getattr(job, "apply_url", None),
+                "source": getattr(job, "source", None) or "other",
+            },
         )
         try:
             await application.insert()

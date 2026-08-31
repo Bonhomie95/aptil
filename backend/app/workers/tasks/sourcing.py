@@ -12,6 +12,7 @@ Connectors are synchronous (plain HTTP); persistence and matching are async
 from __future__ import annotations
 
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from app.core.config import settings
 from app.core.logging import get_logger
@@ -123,97 +124,135 @@ def source_for_user(user_id: str) -> dict:
     ranking was. Sourcing BY the user's stated titles fixes the pool, not just
     the sort order.
     """
+    from app.services.job_cache import clear_sweep
+
     uid = uuid.UUID(user_id)
-    profile = run_async(_profile_for(uid))
-    if profile is None:
-        return {"user_id": user_id, "fetched": 0, "matched": 0}
+    try:
+        profile = run_async(_profile_for(uid))
+        if profile is None:
+            return {"user_id": user_id, "fetched": 0, "matched": 0}
 
-    from app.services.matching import _company_key
+        from app.services.matching import _company_key
 
-    excluded = {
-        _company_key(c)
-        for c in (profile.excluded_companies or [])
-        if isinstance(c, str) and c.strip()
-    }
+        excluded = {
+            _company_key(c)
+            for c in (profile.excluded_companies or [])
+            if isinstance(c, str) and c.strip()
+        }
 
-    # Which discovery sources are live. Web search is the primary, web-wide
-    # path — it finds postings anywhere, not on a fixed board list.
-    # Query-based sources take the user's role/location per call.
-    query_sources: list[str] = []
-    # Web search is ready when it's enabled AND either its provider is keyless
-    # (SearXNG, self-hosted) or an API key is set. The old gate required a key
-    # unconditionally, which silently skipped a keyless SearXNG setup.
-    from app.services.connectors.websearch import WebSearchConnector
+        # Which discovery sources are live. Web search is the primary, web-wide
+        # path — it finds postings anywhere, not on a fixed board list.
+        # Query-based sources take the user's role/location per call.
+        query_sources: list[str] = []
+        # Web search is ready when it's enabled AND either its provider is keyless
+        # (SearXNG, self-hosted) or an API key is set. The old gate required a key
+        # unconditionally, which silently skipped a keyless SearXNG setup.
+        from app.services.connectors.websearch import WebSearchConnector
 
-    _provider = settings.WEB_SEARCH_PROVIDER.strip().lower()
-    _web_search_ready = settings.SOURCING_WEB_SEARCH and (
-        not WebSearchConnector._NEEDS_KEY.get(_provider, True)
-        or bool(settings.WEB_SEARCH_API_KEY.strip())
-    )
-    if _web_search_ready:
-        query_sources.append("web_search")
-    if settings.SOURCING_REMOTE_BOARDS:
-        # These accept a search term (the user's role).
-        query_sources += ["remotive", "himalayas"]
-    # Feed sources return their whole listing regardless of query, fetched once;
-    # the per-user role/country/dedupe gates in matching filter them.
-    feed_sources: list[str] = (
-        ["remoteok", "arbeitnow", "weworkremotely"]
-        if settings.SOURCING_REMOTE_BOARDS
-        else []
-    )
+        _provider = settings.WEB_SEARCH_PROVIDER.strip().lower()
+        _web_search_ready = settings.SOURCING_WEB_SEARCH and (
+            not WebSearchConnector._NEEDS_KEY.get(_provider, True)
+            or bool(settings.WEB_SEARCH_API_KEY.strip())
+        )
+        if _web_search_ready:
+            query_sources.append("web_search")
+        if settings.SOURCING_REMOTE_BOARDS:
+            # These accept a search term (the user's role).
+            query_sources += ["remotive", "himalayas"]
+        # Feed sources return their whole listing regardless of query, fetched once;
+        # the per-user role/country/dedupe gates in matching filter them.
+        feed_sources: list[str] = (
+            ["remoteok", "arbeitnow", "weworkremotely"]
+            if settings.SOURCING_REMOTE_BOARDS
+            else []
+        )
 
-    if not query_sources and not feed_sources:
-        log.warning("source_for_user_no_discovery_source", user_id=user_id)
+        if not query_sources and not feed_sources:
+            log.warning("source_for_user_no_discovery_source", user_id=user_id)
 
-    cap = settings.MAX_POSTINGS_PER_SOURCE
+        cap = settings.MAX_POSTINGS_PER_SOURCE
 
-    def _ingest(postings: list[dict]) -> int:
-        if cap > 0:
-            postings = postings[:cap]
-        # Never ingest an excluded company's postings for this user.
-        if excluded:
-            postings = [
-                pp for pp in postings
-                if _company_key(pp.get("company")) not in excluded
-            ]
-        return run_async(_persist_async(postings))
+        def _ingest(postings: list[dict]) -> int:
+            if cap > 0:
+                postings = postings[:cap]
+            # Never ingest an excluded company's postings for this user.
+            if excluded:
+                postings = [
+                    pp for pp in postings
+                    if _company_key(pp.get("company")) not in excluded
+                ]
+            return run_async(_persist_async(postings))
 
-    from app.services.job_cache import mark_fetched, was_fetched_recently
+        from app.services.job_cache import mark_fetched, was_fetched_recently
 
-    fetched = 0
-    skipped = 0
-    queries = _queries_for_profile(profile)
-    for source_name in query_sources:
-        connector = get_connector(source_name)
-        if connector is None:
-            continue
-        for query in queries:
-            # Another user's recent sweep already pulled this exact query; its
-            # jobs are in the pool, so reuse them instead of calling the API.
-            if was_fetched_recently(source_name, query):
+        # Build the fetch plan first (source, query, connector), skipping
+        # anything another user's recent sweep already covered — those jobs
+        # are already in the pool, so reuse them instead of calling the API
+        # again.
+        skipped = 0
+        queries = _queries_for_profile(profile)
+        plan: list[tuple[str, dict, object]] = []
+        for source_name in query_sources:
+            connector = get_connector(source_name)
+            if connector is None:
+                continue
+            for query in queries:
+                if was_fetched_recently(source_name, query):
+                    skipped += 1
+                    continue
+                plan.append((source_name, query, connector))
+        for source_name in feed_sources:
+            connector = get_connector(source_name)
+            if connector is None:
+                continue
+            if was_fetched_recently(source_name, {}):
                 skipped += 1
                 continue
-            fetched += _ingest(connector.fetch(query))
-            mark_fetched(source_name, query)
-    for source_name in feed_sources:
-        connector = get_connector(source_name)
-        if connector is None:
-            continue
-        if was_fetched_recently(source_name, {}):
-            skipped += 1
-            continue
-        fetched += _ingest(connector.fetch({}))
-        mark_fetched(source_name, {})
+            plan.append((source_name, {}, connector))
 
-    # 40, not 20: the dashboard is a user's whole pipeline, and the gates
-    # (threshold + dedupe + max-per-company) already keep it relevant, so a
-    # larger cap fills it faster without adding noise.
-    created = run_async(match_jobs_for_user(uid, limit=40))
-    log.info("source_for_user_done", user_id=user_id,
-             sources=[*query_sources, *feed_sources], cached_skips=skipped,
-             queries=len(queries), new_jobs=fetched, matched=created)
-    return {"user_id": user_id, "fetched": fetched, "matched": created}
+        # Run every fetch concurrently — these are independent blocking HTTP
+        # calls to different providers, and most of this task's ~200s used to
+        # be spent waiting on them one after another. Persisting stays
+        # single-threaded afterward: run_async reuses one event loop per
+        # worker process, which is not safe to drive from multiple threads at
+        # once, so results are collected here and ingested in a plain loop.
+        results: list[list[dict]] = [[] for _ in plan]
+        if plan:
+            with ThreadPoolExecutor(max_workers=min(len(plan), 8)) as pool:
+                future_to_idx = {
+                    pool.submit(connector.fetch, query): i
+                    for i, (_name, query, connector) in enumerate(plan)
+                }
+                for future in as_completed(future_to_idx):
+                    idx = future_to_idx[future]
+                    try:
+                        results[idx] = future.result()
+                    except Exception as exc:  # noqa: BLE001 - one bad source must not sink the run
+                        log.warning(
+                            "connector_fetch_task_failed",
+                            source=plan[idx][0],
+                            error=str(exc)[:200],
+                        )
+
+        fetched = 0
+        for (source_name, query, _connector), postings in zip(plan, results):
+            fetched += _ingest(postings)
+            mark_fetched(source_name, query)
+
+        # 40, not 20: the dashboard is a user's whole pipeline, and the gates
+        # (threshold + dedupe + max-per-company) already keep it relevant, so a
+        # larger cap fills it faster without adding noise.
+        created = run_async(match_jobs_for_user(uid, limit=40))
+        log.info("source_for_user_done", user_id=user_id,
+                 sources=[*query_sources, *feed_sources], cached_skips=skipped,
+                 queries=len(queries), new_jobs=fetched, matched=created)
+        return {"user_id": user_id, "fetched": fetched, "matched": created}
+    finally:
+        # Always clear, success or failure — a periodic sweep must never be
+        # permanently blocked from this user by one bad run. Harmless if this
+        # call came from an on-demand trigger instead of a sweep (that marker
+        # was simply never set, so this is a no-op).
+        clear_sweep("source", user_id)
 
 
 async def _profile_for(uid: uuid.UUID):
@@ -225,6 +264,12 @@ async def _profile_for(uid: uuid.UUID):
 @celery.task(name="sourcing.match_for_user")
 def match_for_user(user_id: str, limit: int = 20) -> dict:
     """Rank the shared Job pool for ``user_id`` and create matched applications."""
+    from app.services.job_cache import clear_sweep
+
     uid = uuid.UUID(user_id)
-    created = run_async(match_jobs_for_user(uid, limit=limit))  # returns an int count
-    return {"user_id": user_id, "matched": created}
+    try:
+        created = run_async(match_jobs_for_user(uid, limit=limit))  # returns an int count
+        return {"user_id": user_id, "matched": created}
+    finally:
+        # See source_for_user's finally — same reason, own "match" marker.
+        clear_sweep("match", user_id)

@@ -193,9 +193,12 @@ services:
     region: oregon
     rootDir: backend
     dockerfilePath: ./Dockerfile.worker
-    dockerCommand: >-
-      celery -A app.workers.celery_app.celery worker
-      --loglevel=info --concurrency=2
+    # Four Celery consumers (critical email queue + interactive on-demand
+    # sourcing queue + dedicated apply/Playwright queue + default bulk-sweep
+    # queue) — see backend/scripts/start-worker.sh. Keeps verification/reset
+    # emails, a user's own "Find new matches" click, and clicking "Apply" all
+    # off the same pool as the periodic per-user sweep.
+    dockerCommand: bash scripts/start-worker.sh
     envVars:
       - fromGroup: aptil-shared
 

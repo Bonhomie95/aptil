@@ -33,7 +33,15 @@ async def _dispatch_per_user_sourcing() -> int:
     Each user's search is CV-driven and web-wide, so this replaced the old
     aggregator "demand queries" path.
     """
+    from app.services.job_cache import mark_sweep_started, sweep_in_flight
     from app.workers.tasks.sourcing import source_for_user
+
+    # A real run takes minutes (sequential external API calls), so on a large
+    # user base one sweep can outlast its own interval. Without this, the NEXT
+    # sweep piles a duplicate task behind whatever the last one already queued
+    # or is still running, and the backlog only ever grows. See
+    # job_cache.sweep_in_flight for the marker this checks/sets.
+    ttl = max(int(settings.SOURCING_INTERVAL_MINUTES * 60 * 1.5), 60)
 
     dispatched = 0
     users = await _eligible_users()
@@ -42,6 +50,9 @@ async def _dispatch_per_user_sourcing() -> int:
         # Nothing to search on until they have told us what they want.
         if profile is None or not (profile.target_titles or profile.work_history):
             continue
+        if sweep_in_flight("source", str(user.id)):
+            continue
+        mark_sweep_started("source", str(user.id), ttl)
         source_for_user.delay(str(user.id))
         dispatched += 1
     return dispatched
@@ -90,27 +101,45 @@ def match_all_users() -> dict:
 
 
 async def _match_all() -> dict:
+    from app.services.job_cache import mark_sweep_started, sweep_in_flight
     from app.workers.tasks.sourcing import match_for_user
 
+    # See the matching guard note on _dispatch_per_user_sourcing — same reason,
+    # same mechanism, its own "match" marker so the two sweeps never gate each
+    # other.
+    ttl = max(int(settings.MATCHING_INTERVAL_MINUTES * 60 * 1.5), 60)
+
+    dispatched = 0
     users = await _eligible_users()
     for user in users:
         # Only bother for users whose profile has something to match on.
         profile = await Profile.find_one(Profile.user_id == user.id)
         if profile is None or not (profile.skills or profile.work_history):
             continue
+        if sweep_in_flight("match", str(user.id)):
+            continue
+        mark_sweep_started("match", str(user.id), ttl)
         match_for_user.delay(str(user.id))
-    log.info("matching_sweep_dispatched", count=len(users))
-    return {"dispatched": len(users)}
+        dispatched += 1
+    log.info("matching_sweep_dispatched", count=dispatched)
+    return {"dispatched": dispatched}
 
 
 @celery.task(name="scheduler.purge_unapplicable")
 def purge_unapplicable() -> dict:
-    """Delete any application Aptil could not complete.
+    """Delete rows that no longer have any reason to be on a dashboard.
 
-    Going forward the apply engine discards these on the spot; this sweep clears
-    legacy rows (e.g. parked before this behaviour existed) and anything that
-    slipped through, so the dashboard only ever holds real applications.
-    KEEPS in-progress managed-account verifications.
+    Two distinct cases, both cheap to justify:
+      * "discovered" — bookkeeping from before matching ever ran on a
+        posting. Never shown to a user, never will be.
+      * "matched" (never applied) whose target Job has been reaped by the
+        shared pool's retention TTL (Job.Settings, JOB_RETENTION_DAYS —
+        MongoDB expires it in the background, independent of this sweep).
+        Nothing was ever attempted, so there is no historical fact to
+        preserve — unlike a submitted/confirmed/needs_info/failed row, kept
+        forever regardless of whether the posting still exists, because an
+        attempt genuinely happened. Left alone, these accumulate as
+        permanent "Role no longer listed" rows the user can never act on.
     """
     return run_async(_purge_unapplicable())
 
@@ -120,21 +149,40 @@ async def _purge_unapplicable() -> dict:
     from app.models.job import JobApplication
 
     result = await JobApplication.find(
-        {
-            "$or": [
-                {
-                    "status": ApplicationStatus.NEEDS_INFO.value,
-                    "needs_action": {"$ne": "awaiting_email_verification"},
-                },
-                {"status": ApplicationStatus.FAILED.value},
-                {"status": ApplicationStatus.DISCOVERED.value},
-            ]
-        }
+        {"status": ApplicationStatus.DISCOVERED.value}
     ).delete()
     deleted = getattr(result, "deleted_count", 0)
+
+    stale = await _purge_stale_matches()
+    deleted += stale
+
     if deleted:
-        log.info("purged_unapplicable", count=deleted)
+        log.info("purged_unapplicable", count=deleted, stale_matches=stale)
     return {"deleted": deleted}
+
+
+async def _purge_stale_matches() -> int:
+    from app.models.enums import ApplicationStatus
+    from app.models.job import JobApplication
+
+    pipeline = [
+        {"$match": {"status": ApplicationStatus.MATCHED.value}},
+        {
+            "$lookup": {
+                "from": "jobs",
+                "localField": "job_id",
+                "foreignField": "_id",
+                "as": "job",
+            }
+        },
+        {"$match": {"job": {"$size": 0}}},
+        {"$project": {"_id": 1}},
+    ]
+    stale_ids = [row["_id"] for row in await JobApplication.aggregate(pipeline).to_list()]
+    if not stale_ids:
+        return 0
+    result = await JobApplication.find({"_id": {"$in": stale_ids}}).delete()
+    return getattr(result, "deleted_count", 0)
 
 
 @celery.task(name="scheduler.enqueue_all_users")
@@ -143,7 +191,13 @@ def enqueue_all_users() -> dict:
 
 
 async def _enqueue_all() -> dict:
+    from app.services.job_cache import mark_sweep_started, sweep_in_flight
     from app.workers.tasks.apply import enqueue_for_user
+
+    # See the guard note on _dispatch_per_user_sourcing — own "apply" marker so
+    # a backed-up queue doesn't get a redundant enqueue-fan-out stacked on top
+    # of one already pending for the same user.
+    ttl = max(int(settings.APPLY_INTERVAL_MINUTES * 60 * 1.5), 60)
 
     users = await _eligible_users()
     dispatched = 0
@@ -157,6 +211,9 @@ async def _enqueue_all() -> dict:
             continue
         # "none" means the user opted out of us attaching a résumé, not out of
         # applying; but an unset profile with no résumé strategy is skipped.
+        if sweep_in_flight("apply", str(user.id)):
+            continue
+        mark_sweep_started("apply", str(user.id), ttl)
         enqueue_for_user.delay(str(user.id))
         dispatched += 1
     log.info("apply_sweep_dispatched", count=dispatched)
